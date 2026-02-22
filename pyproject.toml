@@ -4,7 +4,7 @@ dependencies = [
     "loguru>=0.7.3",
     "python-dotenv>=1.0.1",
 ]
-name = "chronos"
+name = "chronos-logger"
 requires-python = ">= 3.11"
 version = "0.1.0"
 
