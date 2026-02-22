@@ -2,7 +2,7 @@
 authors = [{name = "cminalo", email = "cminalopez@outlook.com"}]
 dependencies = [
     "loguru>=0.7.3",
-    "python-dotenv>=1.0.1",
+    "python-dotenv>=1.0.1", "hatch>=1.16.3,<2",
 ]
 name = "chronos-logger"
 requires-python = ">= 3.11"
@@ -15,12 +15,15 @@ dev = ["pytest"]
 build-backend = "hatchling.build"
 requires = ["hatchling"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/chronos"]
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64"]
 
 [tool.pixi.pypi-dependencies]
-chronos = { path = ".", editable = true, extras = ["dev"] }
+chronos-logger = { path = ".", editable = true, extras = ["dev"] }
 
 [tool.pixi.tasks]
 
