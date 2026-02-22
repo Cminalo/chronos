@@ -16,7 +16,7 @@ A high-performance, developer-friendly logging wrapper for Python 3.13, built on
 ## Installation
 
 ```bash
-pip install chronos
+pip install chronos-logger
 ```
 
 ## Quick Start
