@@ -4,6 +4,8 @@ A high-performance, developer-friendly logging wrapper for Python 3.13, built on
 
 ## Features
 
+- **Rich Terminal UI**: Beautiful, scrollable log output with syntax highlighting, fixed-width columns, and clickable file paths via the [Rich](https://rich.readthedocs.io/) library.
+- **Progress Bar Integration**: A built-in `logger.progress()` manager that allows logs to seamlessly flow *above* active progress bars without breaking your terminal layout.
 - **Rich Tracebacks**: Automatic detailed tracebacks showing variable values at the time of crash.
 - **Global Error Interception**: Automatically catches and logs all unhandled exceptions with full context (function name, process, and thread details).
 - **Benchmarking (Global & Local)**: Built-in context manager to measure execution time, including a "Global Time" tracker that synchronizes across spawned multiprocessing agents.
@@ -34,6 +36,22 @@ logger.success("Task completed successfully!")
 
 # Check process memory
 logger.memory("Checking RAM usage mid-task")
+```
+
+### Progress Bars (Rich Integration)
+
+Log messages will beautifully scroll past your progress bars without breaking the layout. The bars stack at the bottom of the screen and disappear when the `with` block finishes.
+
+```python
+with logger.progress(transient=True) as p:
+    main_task = p.add_task("[green]Total Pipeline", total=100)
+    
+    for i in range(5):
+        # Stacks below the main task dynamically
+        sub_task = p.add_task(f"[cyan]Agent {i} processing", total=20)
+        
+        # ... do work ...
+        logger.info(f"Agent {i} completed a chunk!") # Scrolls above the bars
 ```
 
 ### Benchmarking (with Global Time)
