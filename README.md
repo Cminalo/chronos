@@ -6,11 +6,13 @@ A high-performance, developer-friendly logging wrapper for Python 3.13, built on
 
 - **Rich Tracebacks**: Automatic detailed tracebacks showing variable values at the time of crash.
 - **Global Error Interception**: Automatically catches and logs all unhandled exceptions with full context (function name, process, and thread details).
-- **Benchmarking**: Built-in context manager to measure and log execution time with high precision.
-- **Dual Routing**:
-  - **Console**: Configurable verbosity via `.env` (INFO, DEBUG, TRACE, etc.).
-  - **File**: Always logs everything to timestamped files in `logs/` for post-mortem analysis.
-- **Modern Tech Stack**: Optimized for Python 3.13 and Apple Silicon (M-series).
+- **Benchmarking (Global & Local)**: Built-in context manager to measure execution time, including a "Global Time" tracker that synchronizes across spawned multiprocessing agents.
+- **Memory Profiling**: A dedicated `MEMORY` level and `.memory()` helper to track Resident Set Size (RSS) RAM usage.
+- **Contextual IDs**: Easily tag logs with specific agent or session IDs (`x_id`) across threads and processes for clean log filtering.
+- **Dual Routing & Serialization**:
+  - **Console**: Configurable verbosity via `.env` (INFO, DEBUG, TRACE, etc.), cleanly formatted with Process/Thread IDs.
+  - **File (Plain Text)**: Always logs everything to timestamped files in `logs/` for human reading.
+  - **File (JSONL)**: Always logs everything to serialized `.jsonl` files for machine parsing (Datadog, ELK, etc.).
 - **Process & Thread Safe**: Fully compatible with multiprocessing and multithreaded applications.
 
 ## Installation
@@ -29,16 +31,30 @@ from chronos import logger
 logger.info("Application started")
 logger.debug("This is a hidden debug message")
 logger.success("Task completed successfully!")
+
+# Check process memory
+logger.memory("Checking RAM usage mid-task")
 ```
 
-### Benchmarking
+### Benchmarking (with Global Time)
 
-Use the `.benchmark()` context manager to track performance:
+Use the `.benchmark()` context manager to track performance. It will show the duration of the block, and the "Global Time" since the first process imported the logger.
 
 ```python
 with logger.benchmark("Data Processing"):
     # Your heavy computation here
     result = perform_complex_task()
+```
+
+### Contextual IDs (For Multi-Agent tracking)
+
+If you are running multiple processes or agents, you can bind an ID to a specific block of code using `contextualize`. The ID will automatically appear in your console and JSON logs.
+
+```python
+with logger.contextualize(x_id="Agent-007"):
+    logger.info("Starting up")
+    # All logs in this block, including deep nested function calls,
+    # will be tagged with [ID: Agent-007].
 ```
 
 ### Catching Exceptions

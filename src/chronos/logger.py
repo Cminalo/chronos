@@ -16,6 +16,7 @@ import os
 import time
 import threading
 import multiprocessing
+import psutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, TYPE_CHECKING, cast
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     # Define a protocol/class for the custom logger to support autocomplete
     class ChronosLogger(Logger):
         def benchmark(self, name: str = "Operation") -> AbstractContextManager[None]: ...
+        def memory(self, message: str = "Memory check") -> None: ...
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -38,6 +40,7 @@ load_dotenv()
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.log"
+JSON_LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.jsonl"
 
 # 3. Configure Levels & Colors
 # We define specific colors for each level to make them visually distinct.
@@ -46,6 +49,7 @@ LOG_LEVELS = [
     {"name": "TRACE", "color": "<dim>"},              # Gray/Dim
     {"name": "DEBUG", "color": "<cyan>"},             # Cyan
     {"name": "INFO", "color": "<white>"},             # White
+    {"name": "MEMORY", "no": 22, "color": "<blue>", "icon": "🧠"}, # Blue
     {"name": "BENCHMARK", "no": 25, "color": "<magenta>", "icon": "⏱️"}, # Magenta
     {"name": "SUCCESS", "color": "<green>"},          # Green
     {"name": "WARNING", "color": "<yellow>"},         # Yellow
@@ -64,23 +68,37 @@ for level_config in LOG_LEVELS:
         # Fallback if arguments mismatch (shouldn't happen with correct usage)
         pass
 
+# Global Start Time for cross-process benchmarking
+# Using environment variables ensures spawned processes inherit the same start time
+if "CHRONOS_START_TIME" not in os.environ:
+    os.environ["CHRONOS_START_TIME"] = str(time.perf_counter())
+
 # 4. Custom Formatter
 def formatter(record: dict) -> str:
     """
     Custom logging format to match requirements.
     
     Format:
-    [TIMESTAMP] | LEVEL | "Message" | module -> function -> line
+    [TIMESTAMP] | LEVEL | [PID:TID] | "Message" | module -> function -> line
     """
     message_format = "{message}"
     
     # Check if there's a benchmark duration in extra
     if "duration" in record["extra"]:
-        message_format = "{message} (Duration: {extra[duration]:.4f}s)"
+        global_time = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
+        message_format = "{message} (Duration: {extra[duration]:.4f}s, Global: " + f"{global_time:.4f}s" + ")"
+        
+    # Check if memory info is in extra
+    if "memory_mb" in record["extra"]:
+        message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
+
+    # Add Contextual IDs if provided (for multi-agent tracking)
+    ctx_id = f" [ID: {record['extra']['x_id']}]" if "x_id" in record["extra"] else ""
 
     return (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level: <9}</level> | "
+        "<dim>[P:{process.id}|T:{thread.id}]</dim>" + ctx_id + " | "
         f"\"{message_format}\" | "
         "<cyan>{name}</cyan> -> "
         "<cyan>{function}</cyan> -> "
@@ -120,6 +138,20 @@ _logger.add(
     diagnose=True,
 )
 
+# Sink 3: JSON File (logs/chronos_DATE.jsonl)
+# Serialize logs to JSON Lines for ELK/Datadog/Machine parsing
+_logger.add(
+    JSON_LOG_FILE_PATH,
+    level="TRACE",
+    rotation="00:00",
+    retention="10 days",
+    compression="zip",
+    serialize=True,     # <--- Enables JSON serialization
+    enqueue=True,
+    backtrace=True,
+    diagnose=True,
+)
+
 # 6. Benchmark Context Manager
 @contextmanager
 def benchmark(name: str = "Operation") -> Generator[None, None, None]:
@@ -142,7 +174,18 @@ def benchmark(name: str = "Operation") -> Generator[None, None, None]:
         # depth=2 ensures the log location points to the caller of the context manager
         _logger.bind(duration=duration).opt(depth=2).log("BENCHMARK", f"{name} finished")
 
-# 7. Global Exception Hook
+# 7. Memory Profiling Helper
+def memory(message: str = "Memory check"):
+    """
+    Logs the current process Resident Set Size (RSS) memory usage in MB.
+    """
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    # Convert bytes to Megabytes
+    rss_mb = mem_info.rss / (1024 * 1024)
+    _logger.bind(memory_mb=rss_mb).opt(depth=1).log("MEMORY", message)
+
+# 8. Global Exception Hook
 def handle_exception(exc_type, exc_value, exc_traceback):
     """
     Intersects unhandled exceptions and logs them via loguru.
@@ -175,11 +218,12 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 # Install the hook
 sys.excepthook = handle_exception
 
-# Attach benchmark to logger instance for easy access
-# We treat _logger as a mutable object here to attach the method
+# Attach methods to logger instance for easy access
+# We treat _logger as a mutable object here to attach the methods
 setattr(_logger, "benchmark", benchmark)
+setattr(_logger, "memory", memory)
 
-# Cast the logger to our custom type so IDEs recognize .benchmark()
+# Cast the logger to our custom type so IDEs recognize .benchmark() and .memory()
 logger = cast("ChronosLogger", _logger)
 
 # Export the configured logger
