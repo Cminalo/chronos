@@ -118,6 +118,10 @@ def rich_formatter(record: dict) -> str:
         message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
         
     ctx_id = f"[ID: {record['extra']['x_id']}] " if "x_id" in record["extra"] else ""
+    
+    if record["exception"]:
+        return ctx_id + message_format + "\n{exception}"
+    
     return ctx_id + message_format
 
 # 5. Configure Sinks
@@ -134,8 +138,7 @@ if RICH_AVAILABLE and use_rich:
     _logger.add(
         RichHandler(
             console=_rich_console,
-            rich_tracebacks=True,
-            tracebacks_show_locals=True,
+            rich_tracebacks=False, # We want Loguru's native traceback with variables
             show_path=True,
             markup=True,
         ),
