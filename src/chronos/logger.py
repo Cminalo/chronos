@@ -34,6 +34,7 @@ try:
         TextColumn,
         BarColumn,
         TaskProgressColumn,
+        MofNCompleteColumn,
         TimeElapsedColumn,
         TimeRemainingColumn,
     )
@@ -222,6 +223,7 @@ def progress(transient: bool = False):
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
+        MofNCompleteColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=_rich_console, # Must share the same console instance as the RichHandler
