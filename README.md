@@ -74,6 +74,27 @@ with logger.progress(transient=True) as p:
         logger.info(f"Agent {i} completed a chunk!") # Scrolls above the bars
 ```
 
+**Multi-Process Progress (Proxy Progress):**
+If you are spawning child processes, you can seamlessly route their progress bars back to the main terminal window!
+
+```python
+import multiprocessing
+from chronos import logger
+
+def worker(queue):
+    logger.set_progress_queue(queue)
+    with logger.progress() as p:
+        task = p.add_task("Agent working...", total=100)
+        p.update(task, advance=50)
+
+if __name__ == "__main__":
+    queue = logger.get_progress_queue()
+    with logger.progress() as p:
+        proc = multiprocessing.Process(target=worker, args=(queue,))
+        proc.start()
+        proc.join()
+```
+
 ### Benchmarking (with Global Time)
 
 Use the `.benchmark()` context manager to track performance. It will show the duration of the block, and the "Global Time" since the first process imported the logger.
