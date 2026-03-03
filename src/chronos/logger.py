@@ -54,6 +54,8 @@ if TYPE_CHECKING:
         def progress(self, transient: bool = False) -> "Progress": ...
         def intercept_standard_logging(self) -> None: ...
         def enable_system_metrics(self) -> None: ...
+        def get_progress_queue(self) -> multiprocessing.Queue: ...
+        def set_progress_queue(self, queue: multiprocessing.Queue) -> None: ...
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -210,15 +212,64 @@ def memory(message: str = "Memory check"):
     _logger.bind(memory_mb=rss_mb).opt(depth=1).log("MEMORY", message)
 
 # 8. Rich Progress Manager
+class RemoteProgress:
+    """
+    A proxy for the rich.progress.Progress object that can be used in child processes.
+    It sends updates via a multiprocessing Queue to the main process.
+    """
+    def __init__(self, queue: multiprocessing.Queue):
+        self._queue = queue
+
+    def add_task(self, description: str, total: float = 100.0, **kwargs) -> int:
+        # Create a unique ID for this task across processes
+        task_id = id(description) + int(time.time() * 1000)
+        self._queue.put(("add", task_id, description, total, kwargs))
+        return task_id
+
+    def update(self, task_id: int, advance: float = 0, **kwargs):
+        self._queue.put(("update", task_id, advance, kwargs))
+
+    def __enter__(self): return self
+    def __exit__(self, exc_type, exc_val, exc_tb): pass
+
+def _progress_listener(queue: multiprocessing.Queue, progress_instance: "Progress"):
+    """Background thread in the main process that listens for progress updates."""
+    tasks = {}
+    with progress_instance:
+        while True:
+            msg = queue.get()
+            if msg is None: # Sentinel for shutdown
+                break
+            
+            action = msg[0]
+            if action == "add":
+                _, tid, desc, total, kwargs = msg
+                tasks[tid] = progress_instance.add_task(desc, total=total, **kwargs)
+            elif action == "update":
+                _, tid, advance, kwargs = msg
+                if tid in tasks:
+                    progress_instance.update(tasks[tid], advance=advance, **kwargs)
+
+_PROGRESS_QUEUE = None
+_PROGRESS_LISTENER_THREAD = None
+
 def progress(transient: bool = False):
     """
-    Returns a rich.progress.Progress manager integrated with Loguru.
-    Logs will naturally flow above the progress bars.
+    Returns a progress manager. 
+    In the Main Process: Returns a real Rich Progress and starts a listener for child updates.
+    In Child Processes: Returns a RemoteProgress proxy if logger.progress_queue is set.
     """
+    global _PROGRESS_QUEUE, _PROGRESS_LISTENER_THREAD
+    
     if not RICH_AVAILABLE:
-        raise ImportError("The 'rich' library is required to use progress bars. Install with: pip install rich")
+        raise ImportError("The 'rich' library is required. Install with: pip install rich")
+
+    # If we are in a child process and have a queue, return a proxy
+    if multiprocessing.current_process().name != "MainProcess" and _PROGRESS_QUEUE:
+        return RemoteProgress(_PROGRESS_QUEUE)
         
-    return Progress(
+    # In Main Process, create a real Progress
+    p = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -226,9 +277,27 @@ def progress(transient: bool = False):
         MofNCompleteColumn(),
         TimeElapsedColumn(),
         TimeRemainingColumn(),
-        console=_rich_console, # Must share the same console instance as the RichHandler
+        console=_rich_console,
         transient=transient,
     )
+
+    # Start the listener thread if we want to support child updates
+    if _PROGRESS_QUEUE is None:
+        _PROGRESS_QUEUE = multiprocessing.Queue()
+        
+    _PROGRESS_LISTENER_THREAD = threading.Thread(
+        target=_progress_listener, 
+        args=(_PROGRESS_QUEUE, p),
+        daemon=True
+    )
+    _PROGRESS_LISTENER_THREAD.start()
+    
+    return p
+
+def set_progress_queue(queue: multiprocessing.Queue):
+    """Set the queue used for remote progress updates (call this in child processes)."""
+    global _PROGRESS_QUEUE
+    _PROGRESS_QUEUE = queue
 
 # 9. Global Exception Hook
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -293,6 +362,13 @@ def enable_system_metrics():
     
     _logger.configure(patcher=patcher)
 
+def get_progress_queue():
+    """Returns the current progress queue to be passed to child processes."""
+    global _PROGRESS_QUEUE
+    if _PROGRESS_QUEUE is None:
+        _PROGRESS_QUEUE = multiprocessing.Queue()
+    return _PROGRESS_QUEUE
+
 sys.excepthook = handle_exception
 
 # Attach methods
@@ -301,6 +377,8 @@ setattr(_logger, "memory", memory)
 setattr(_logger, "progress", progress)
 setattr(_logger, "intercept_standard_logging", intercept_standard_logging)
 setattr(_logger, "enable_system_metrics", enable_system_metrics)
+setattr(_logger, "get_progress_queue", get_progress_queue)
+setattr(_logger, "set_progress_queue", set_progress_queue)
 
 logger = cast("ChronosLogger", _logger)
 __all__ = ["logger"]
