@@ -82,3 +82,25 @@ def test_exception_catching(configured_logger):
     content = configured_logger.read_text()
     
     assert "Intentional Failure" in content
+
+def test_interceptor(configured_logger):
+    import logging
+    chronos_logger.intercept_standard_logging()
+    logging.warning("This is a standard warning")
+    
+    chronos_logger.complete()
+    content = configured_logger.read_text()
+    
+    assert "This is a standard warning" in content
+
+def test_system_metrics(configured_logger):
+    # Enable metrics
+    chronos_logger.enable_system_metrics()
+    chronos_logger.info("Test metrics log")
+    
+    chronos_logger.complete()
+    content = configured_logger.read_text()
+    
+    # Since we used the simple format fixture {message}, the extra dict won't be printed by default.
+    # But we can verify that the patcher didn't crash. 
+    assert "Test metrics log" in content

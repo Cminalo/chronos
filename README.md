@@ -6,15 +6,18 @@ A high-performance, developer-friendly logging wrapper for Python 3.13, built on
 
 - **Rich Terminal UI**: Beautiful, scrollable log output with syntax highlighting, fixed-width columns, and clickable file paths via the [Rich](https://rich.readthedocs.io/) library.
 - **Progress Bar Integration**: A built-in `logger.progress()` manager that allows logs to seamlessly flow *above* active progress bars without breaking your terminal layout.
+- **Standard Logging Interception**: Automatically routes logs from third-party libraries (like `requests` or `boto3`) into your beautiful Chronos UI.
 - **Rich Tracebacks**: Automatic detailed tracebacks showing variable values at the time of crash.
 - **Global Error Interception**: Automatically catches and logs all unhandled exceptions with full context (function name, process, and thread details).
 - **Benchmarking (Global & Local)**: Built-in context manager to measure execution time, including a "Global Time" tracker that synchronizes across spawned multiprocessing agents.
+- **Sticky System Metrics**: Automatically attach CPU % and Active Thread count to every log line for high-density debugging.
 - **Memory Profiling**: A dedicated `MEMORY` level and `.memory()` helper to track Resident Set Size (RSS) RAM usage.
 - **Contextual IDs**: Easily tag logs with specific agent or session IDs (`x_id`) across threads and processes for clean log filtering.
 - **Dual Routing & Serialization**:
   - **Console**: Configurable verbosity via `.env` (INFO, DEBUG, TRACE, etc.), cleanly formatted with Process/Thread IDs.
   - **File (Plain Text)**: Always logs everything to timestamped files in `logs/` for human reading.
   - **File (JSONL)**: Always logs everything to serialized `.jsonl` files for machine parsing (Datadog, ELK, etc.).
+- **Automated Rotation**: Log files are rotated daily, zipped to save space, and retained for 10 days by default.
 - **Process & Thread Safe**: Fully compatible with multiprocessing and multithreaded applications.
 
 ## Installation
@@ -36,6 +39,23 @@ logger.success("Task completed successfully!")
 
 # Check process memory
 logger.memory("Checking RAM usage mid-task")
+```
+
+### System Metrics & Interception (Advanced)
+
+If you want to track hardware usage on every log line, or capture logs from other libraries:
+
+```python
+from chronos import logger
+
+# 1. Adds CPU % and Thread Count to every log's metadata
+logger.enable_system_metrics()
+
+# 2. Captures all standard python `logging` (e.g., from 'requests' or 'openai')
+logger.intercept_standard_logging()
+
+import logging
+logging.warning("This standard warning will now look like a Chronos log!")
 ```
 
 ### Progress Bars (Rich Integration)

@@ -4,11 +4,11 @@ dependencies = [
     "loguru>=0.7.3",
     "python-dotenv>=1.0.1",
     "psutil>=7.2.0",
-    "rich>=14.3.0",
+    "rich>=14.3.0", "torch>=2.10.0,<3",
 ]
 name = "chronos-logger"
 requires-python = ">= 3.11"
-version = "0.2.0"
+version = "0.3.0"
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -31,3 +31,5 @@ chronos-logger = { path = ".", editable = true, extras = ["dev"] }
 
 [tool.pixi.dependencies]
 python = "3.13.*"
+nodejs = ">=25.6.1,<25.7"
+lazygit = ">=0.59.0,<0.60"

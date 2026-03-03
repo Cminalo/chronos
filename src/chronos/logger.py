@@ -17,6 +17,7 @@ import time
 import threading
 import multiprocessing
 import psutil
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, TYPE_CHECKING, cast
@@ -50,6 +51,8 @@ if TYPE_CHECKING:
         def benchmark(self, name: str = "Operation") -> AbstractContextManager[None]: ...
         def memory(self, message: str = "Memory check") -> None: ...
         def progress(self, transient: bool = False) -> "Progress": ...
+        def intercept_standard_logging(self) -> None: ...
+        def enable_system_metrics(self) -> None: ...
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -97,6 +100,8 @@ def file_formatter(record: dict) -> str:
         message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
 
     ctx_id = f" [ID: {record['extra']['x_id']}]" if "x_id" in record["extra"] else ""
+    if "cpu_pct" in record["extra"]:
+        ctx_id += f" [CPU: {record['extra']['cpu_pct']}%|Thr: {record['extra']['thread_cnt']}]"
 
     return (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -118,6 +123,8 @@ def rich_formatter(record: dict) -> str:
         message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
         
     ctx_id = f"[ID: {record['extra']['x_id']}] " if "x_id" in record["extra"] else ""
+    if "cpu_pct" in record["extra"]:
+        ctx_id += f"[CPU: {record['extra']['cpu_pct']}%|Thr: {record['extra']['thread_cnt']}] "
     
     if record["exception"]:
         return ctx_id + message_format + "\n{exception}"
@@ -244,12 +251,54 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
     _logger.opt(exception=(exc_type, exc_value, exc_traceback)).critical(msg)
 
+# 10. Standard Logging Interceptor
+class InterceptHandler(logging.Handler):
+    """
+    Intercepts standard logging messages and routes them to Loguru.
+    """
+    def emit(self, record: logging.LogRecord):
+        # Get corresponding Loguru level if it exists.
+        try:
+            level = _logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Find caller from where originated the logged message
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            if frame.f_back:
+                frame = frame.f_back
+            depth += 1
+
+        _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+def intercept_standard_logging():
+    """
+    Routes all standard Python 'logging' calls through Chronos.
+    Call this once at the start of your application.
+    """
+    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+
+# 11. Sticky System Metrics
+def enable_system_metrics():
+    """
+    Patches the logger to include CPU and Thread count in every log's 'extra' dict.
+    Useful for high-density debugging.
+    """
+    def patcher(record):
+        record["extra"]["cpu_pct"] = psutil.cpu_percent()
+        record["extra"]["thread_cnt"] = threading.active_count()
+    
+    _logger.configure(patcher=patcher)
+
 sys.excepthook = handle_exception
 
 # Attach methods
 setattr(_logger, "benchmark", benchmark)
 setattr(_logger, "memory", memory)
 setattr(_logger, "progress", progress)
+setattr(_logger, "intercept_standard_logging", intercept_standard_logging)
+setattr(_logger, "enable_system_metrics", enable_system_metrics)
 
 logger = cast("ChronosLogger", _logger)
 __all__ = ["logger"]
