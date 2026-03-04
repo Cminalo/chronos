@@ -116,24 +116,6 @@ def file_formatter(record: dict) -> str:
         "<cyan>{line}</cyan>\n{exception}"
     )
 
-def rich_formatter(record: dict) -> str:
-    """Format used for RichHandler console (simplified because Rich adds time/level/path)"""
-    message_format = "{message}"
-    if "duration" in record["extra"]:
-        global_time = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
-        message_format = "{message} (Duration: {extra[duration]:.4f}s, Global: " + f"{global_time:.4f}s" + ")"
-    if "memory_mb" in record["extra"]:
-        message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
-        
-    ctx_id = f"[ID: {record['extra']['x_id']}] " if "x_id" in record["extra"] else ""
-    if "cpu_pct" in record["extra"]:
-        ctx_id += f"[CPU: {record['extra']['cpu_pct']}%|Thr: {record['extra']['thread_cnt']}] "
-    
-    if record["exception"]:
-        return ctx_id + message_format + "\n{exception}"
-    
-    return ctx_id + message_format
-
 # 5. Configure Sinks
 _logger.remove()
 
@@ -141,20 +123,23 @@ console_level = os.getenv("LOGGER_LEVEL", "INFO").upper()
 use_rich = os.getenv("RICH_CONSOLE", "True").lower() in ("true", "1", "yes")
 
 # Optional Global Rich Console (used so logger and progress share the same buffer)
-_rich_console = Console() if RICH_AVAILABLE else None
+# We must explicitly set file=sys.stderr so it perfectly synchronizes with Loguru's output stream.
+_rich_console = Console(file=sys.stderr) if RICH_AVAILABLE else None
+
+def rich_console_sink(message):
+    """Custom sink that forces Loguru to use Rich's print, preventing progress bar tearing."""
+    _rich_console.print(message, end="", markup=False, highlight=False)
 
 if RICH_AVAILABLE and use_rich:
     # Rich Console Sink
     _logger.add(
-        RichHandler(
-            console=_rich_console,
-            rich_tracebacks=False, # We want Loguru's native traceback with variables
-            show_path=True,
-            markup=True,
-        ),
+        rich_console_sink,
         level=console_level,
-        format=rich_formatter,
-        enqueue=True, # Important for progress bars pushing logs
+        format=file_formatter,
+        colorize=True,
+        enqueue=False, # Must be False to prevent background thread terminal tearing with Progress bars
+        backtrace=True,
+        diagnose=True,
     )
 else:
     # Standard Console Sink
