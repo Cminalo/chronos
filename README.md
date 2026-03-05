@@ -74,17 +74,20 @@ with logger.progress(transient=True) as p:
         logger.info(f"Agent {i} completed a chunk!") # Scrolls above the bars
 ```
 
-**Multi-Process Progress (Proxy Progress):**
-If you are spawning child processes, you can seamlessly route their progress bars back to the main terminal window!
+**Multi-Process Coordination (Proxy Progress & Unified Logging):**
+If you are spawning child processes, you can seamlessly route their progress bars **and logs** back to the main terminal window. This prevents "terminal tearing" where logs and bars overwrite each other.
 
 ```python
 import multiprocessing
 from chronos import logger
 
 def worker(queue):
+    # This automatically redirects logs and progress to the main process
     logger.set_progress_queue(queue)
+    
     with logger.progress() as p:
         task = p.add_task("Agent working...", total=100)
+        logger.info("This log will elegantly jump over the progress bar!")
         p.update(task, advance=50)
 
 if __name__ == "__main__":

@@ -196,7 +196,7 @@ def memory(message: str = "Memory check"):
     rss_mb = mem_info.rss / (1024 * 1024)
     _logger.bind(memory_mb=rss_mb).opt(depth=1).log("MEMORY", message)
 
-# 8. Rich Progress Manager
+# 8. Rich Progress & Log Proxy Manager
 class RemoteProgress:
     """
     A proxy for the rich.progress.Progress object that can be used in child processes.
@@ -208,17 +208,17 @@ class RemoteProgress:
     def add_task(self, description: str, total: float = 100.0, **kwargs) -> int:
         # Create a unique ID for this task across processes
         task_id = id(description) + int(time.time() * 1000)
-        self._queue.put(("add", task_id, description, total, kwargs))
+        self._queue.put(("progress", "add", task_id, description, total, kwargs))
         return task_id
 
     def update(self, task_id: int, advance: float = 0, **kwargs):
-        self._queue.put(("update", task_id, advance, kwargs))
+        self._queue.put(("progress", "update", task_id, advance, kwargs))
 
     def __enter__(self): return self
     def __exit__(self, exc_type, exc_val, exc_tb): pass
 
-def _progress_listener(queue: multiprocessing.Queue, progress_instance: "Progress"):
-    """Background thread in the main process that listens for progress updates."""
+def _main_listener(queue: multiprocessing.Queue, progress_instance: "Progress"):
+    """Background thread in the main process that listens for progress AND log updates."""
     tasks = {}
     with progress_instance:
         while True:
@@ -226,17 +226,25 @@ def _progress_listener(queue: multiprocessing.Queue, progress_instance: "Progres
             if msg is None: # Sentinel for shutdown
                 break
             
-            action = msg[0]
-            if action == "add":
-                _, tid, desc, total, kwargs = msg
-                tasks[tid] = progress_instance.add_task(desc, total=total, **kwargs)
-            elif action == "update":
-                _, tid, advance, kwargs = msg
-                if tid in tasks:
-                    progress_instance.update(tasks[tid], advance=advance, **kwargs)
+            category = msg[0]
+            
+            if category == "progress":
+                action = msg[1]
+                if action == "add":
+                    _, _, tid, desc, total, kwargs = msg
+                    tasks[tid] = progress_instance.add_task(desc, total=total, **kwargs)
+                elif action == "update":
+                    _, _, tid, advance, kwargs = msg
+                    if tid in tasks:
+                        progress_instance.update(tasks[tid], advance=advance, **kwargs)
+            
+            elif category == "log":
+                # Print the proxied log message through the main console
+                _, formatted_msg = msg
+                _rich_console.print(formatted_msg, end="", markup=False, highlight=False)
 
 _PROGRESS_QUEUE = None
-_PROGRESS_LISTENER_THREAD = None
+_LISTENER_THREAD = None
 
 def progress(transient: bool = False):
     """
@@ -244,7 +252,7 @@ def progress(transient: bool = False):
     In the Main Process: Returns a real Rich Progress and starts a listener for child updates.
     In Child Processes: Returns a RemoteProgress proxy if logger.progress_queue is set.
     """
-    global _PROGRESS_QUEUE, _PROGRESS_LISTENER_THREAD
+    global _PROGRESS_QUEUE, _LISTENER_THREAD
     
     if not RICH_AVAILABLE:
         raise ImportError("The 'rich' library is required. Install with: pip install rich")
@@ -270,12 +278,12 @@ def progress(transient: bool = False):
     if _PROGRESS_QUEUE is None:
         _PROGRESS_QUEUE = multiprocessing.Queue()
         
-    _PROGRESS_LISTENER_THREAD = threading.Thread(
-        target=_progress_listener, 
+    _LISTENER_THREAD = threading.Thread(
+        target=_main_listener, 
         args=(_PROGRESS_QUEUE, p),
         daemon=True
     )
-    _PROGRESS_LISTENER_THREAD.start()
+    _LISTENER_THREAD.start()
     
     return p
 
@@ -283,6 +291,22 @@ def set_progress_queue(queue: multiprocessing.Queue):
     """Set the queue used for remote progress updates (call this in child processes)."""
     global _PROGRESS_QUEUE
     _PROGRESS_QUEUE = queue
+    
+    # Also redirect all console logs to this queue
+    _logger.remove(1) # Remove the console sink (index 1 is usually the first added sink)
+    # Actually, it's safer to remove by id if we had it, but since we are in a fresh child process
+    # we can just remove all and re-add.
+    _logger.remove()
+    
+    # Re-add file sinks (they still work fine in children)
+    _logger.add(LOG_FILE_PATH, level="TRACE", rotation="00:00", retention="10 days", compression="zip", format=file_formatter, enqueue=True)
+    _logger.add(JSON_LOG_FILE_PATH, level="TRACE", rotation="00:00", retention="10 days", compression="zip", serialize=True, enqueue=True)
+    
+    # Add the Proxy Sink for console logs
+    def proxy_sink(message):
+        queue.put(("log", message))
+        
+    _logger.add(proxy_sink, level=os.getenv("LOGGER_LEVEL", "INFO").upper(), format=file_formatter, colorize=True)
 
 # 9. Global Exception Hook
 def handle_exception(exc_type, exc_value, exc_traceback):
