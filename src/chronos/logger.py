@@ -292,10 +292,12 @@ def set_progress_queue(queue: multiprocessing.Queue):
     global _PROGRESS_QUEUE
     _PROGRESS_QUEUE = queue
     
-    # Also redirect all console logs to this queue
-    _logger.remove(1) # Remove the console sink (index 1 is usually the first added sink)
-    # Actually, it's safer to remove by id if we had it, but since we are in a fresh child process
-    # we can just remove all and re-add.
+    # ThreadPool workers run in the MainProcess. We MUST NOT remove sinks here,
+    # as they share the memory space and are already thread-safe.
+    if multiprocessing.current_process().name == "MainProcess":
+        return
+        
+    # If we are in a true child process, redirect all console logs to the queue
     _logger.remove()
     
     # Re-add file sinks (they still work fine in children)

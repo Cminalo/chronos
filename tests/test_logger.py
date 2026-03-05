@@ -104,3 +104,15 @@ def test_system_metrics(configured_logger):
     # Since we used the simple format fixture {message}, the extra dict won't be printed by default.
     # But we can verify that the patcher didn't crash. 
     assert "Test metrics log" in content
+
+def test_parallel_thread(configured_logger):
+    from chronos import parallel
+    
+    results = []
+    def prep(pool):
+        return [pool.apply_async(lambda x: x*2, (i,)) for i in range(5)]
+    def post(res):
+        results.append(res)
+        
+    parallel.thread_run(prep, post, "Testing threads", 5, 2)
+    assert set(results) == {0, 2, 4, 6, 8}
