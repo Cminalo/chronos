@@ -18,7 +18,9 @@ A high-performance, developer-friendly logging wrapper for Python 3.13, built on
   - **File (Plain Text)**: Always logs everything to timestamped files in `logs/` for human reading.
   - **File (JSONL)**: Always logs everything to serialized `.jsonl` files for machine parsing (Datadog, ELK, etc.).
 - **Execution Summaries**: Generate professional end-of-run reports with `logger.summary()`, showing log level breakdowns, success/failure counts, and system performance.
-- **Automated Rotation**: Log files are rotated daily, zipped to save space, and retained for 10 days by default.
+- **Log Filtering**: Easily silence noisy third-party libraries with `logger.silence("noisy_lib")`.
+- **Task Recovery**: Parallel execution automatically tracks and returns the exact inputs that failed, and logs them to a dedicated `logs/failures_{date}.log` file.
+- **Automated Rotation**: All log files (standard, JSONL, and failures) are rotated daily, zipped to save space, and retained for 10 days by default.
 - **Process & Thread Safe**: Fully compatible with multiprocessing and multithreaded applications.
 
 ## Installation
@@ -29,38 +31,48 @@ pip install chronos-logger
 
 ## Quick Start
 
-### Parallel Execution (Automated Task Pools)
+### Parallel Execution & Task Recovery
 
-Chronos includes a powerful `parallel` module built to run massive jobs across threads or processes while perfectly maintaining your beautiful progress bars and memory safety.
+Chronos includes a powerful `parallel` module built to run massive jobs while perfectly maintaining your beautiful progress bars and memory safety. It also tracks exactly which inputs failed for easy re-runs.
 
 ```python
 from chronos import logger, parallel
 
 def my_worker(data_chunk):
-    logger.info(f"Processing chunk {data_chunk}")
+    if data_chunk == 13: raise ValueError("Unlucky!")
     return data_chunk * 2
 
 def my_prep(pool):
-    return [pool.apply_async(my_worker, (i,)) for i in range(100)]
+    # To enable task recovery, return tuples of (input, async_result)
+    data = range(20)
+    return [(i, pool.apply_async(my_worker, (i,))) for i in data]
 
-results = []
-def my_post(result):
-    results.append(result)
-
-# Returns success and failure counts
-success, failure = parallel.process_run(
+# Returns success count, failure count, AND the list of failed inputs
+success, failure, failed_inputs = parallel.process_run(
     prep_func=my_prep,
-    post_func=my_post,
-    desc="Processing Big Data",
-    total=100,
-    workers=4
+    post_func=lambda r: None,
+    desc="Processing Data",
+    total=20
 )
 
-# Generate a professional summary report!
-logger.summary("Data Pipeline Results", success_count=success, failure_count=failure)
+if failed_inputs:
+    logger.error(f"The following inputs failed: {failed_inputs}")
+    # These are also saved in logs/failures_{date}.log with full tracebacks!
+
+logger.summary("Execution Results", success_count=success, failure_count=failure)
 ```
 
-### Basic Logging
+### Basic Logging & Silencing
+
+```python
+from chronos import logger
+
+logger.info("Application started")
+
+# Silence noisy third-party logs (e.g., from 'urllib3' or 'openai')
+logger.silence("urllib3", "boto3")
+logger.intercept_standard_logging()
+```
 
 ```python
 from chronos import logger

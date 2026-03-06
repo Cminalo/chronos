@@ -60,6 +60,7 @@ if TYPE_CHECKING:
         def get_progress_queue(self) -> multiprocessing.Queue: ...
         def set_progress_queue(self, queue: multiprocessing.Queue) -> None: ...
         def summary(self, title: str = "Execution Summary", success_count: int | None = None, failure_count: int | None = None) -> None: ...
+        def silence(self, *module_names: str) -> None: ...
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -69,6 +70,10 @@ LOG_DIR = Path("logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.log"
 JSON_LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.jsonl"
+FAILURES_LOG_FILE_PATH = LOG_DIR / "failures_{time:YYYY-MM-DD}.log"
+
+# Global Silenced Modules (for standard logging interception)
+_SILENCED_MODULES = set()
 
 # 3. Configure Levels & Colors
 LOG_LEVELS = [
@@ -199,6 +204,21 @@ _logger.add(
     retention="10 days",
     compression="zip",
     serialize=True,
+    enqueue=True,
+    backtrace=True,
+    diagnose=True,
+)
+
+# Sink 4: Failures Log (logs/failures_DATE.log)
+# Only captures logs explicitly marked as failures (e.g. from parallel.execute)
+_logger.add(
+    FAILURES_LOG_FILE_PATH,
+    level="ERROR",
+    filter=lambda record: record["extra"].get("is_failure", False),
+    rotation="00:00",
+    retention="10 days",
+    compression="zip",
+    format=file_formatter,
     enqueue=True,
     backtrace=True,
     diagnose=True,
@@ -365,6 +385,10 @@ class InterceptHandler(logging.Handler):
     Intercepts standard logging messages and routes them to Loguru.
     """
     def emit(self, record: logging.LogRecord):
+        # Respect silenced modules
+        if record.name in _SILENCED_MODULES:
+            return
+
         # Get corresponding Loguru level if it exists.
         try:
             level = _logger.level(record.levelname).name
@@ -386,6 +410,12 @@ def intercept_standard_logging():
     Call this once at the start of your application.
     """
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+
+def silence(*module_names):
+    """Silences log output from the specified modules (only for intercepted logs)."""
+    global _SILENCED_MODULES
+    for name in module_names:
+        _SILENCED_MODULES.add(name)
 
 # 11. Sticky System Metrics
 def enable_system_metrics():
@@ -483,6 +513,7 @@ setattr(_logger, "enable_system_metrics", enable_system_metrics)
 setattr(_logger, "get_progress_queue", get_progress_queue)
 setattr(_logger, "set_progress_queue", set_progress_queue)
 setattr(_logger, "summary", summary)
+setattr(_logger, "silence", silence)
 
 logger = cast("ChronosLogger", _logger)
 __all__ = ["logger"]
