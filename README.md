@@ -17,6 +17,7 @@ A high-performance, developer-friendly logging wrapper for Python 3.13, built on
   - **Console**: Configurable verbosity via `.env` (INFO, DEBUG, TRACE, etc.), cleanly formatted with Process/Thread IDs.
   - **File (Plain Text)**: Always logs everything to timestamped files in `logs/` for human reading.
   - **File (JSONL)**: Always logs everything to serialized `.jsonl` files for machine parsing (Datadog, ELK, etc.).
+- **Execution Summaries**: Generate professional end-of-run reports with `logger.summary()`, showing log level breakdowns, success/failure counts, and system performance.
 - **Automated Rotation**: Log files are rotated daily, zipped to save space, and retained for 10 days by default.
 - **Process & Thread Safe**: Fully compatible with multiprocessing and multithreaded applications.
 
@@ -28,7 +29,7 @@ pip install chronos-logger
 
 ## Quick Start
 
-### Parallel Execution (Automated Agent Swarms)
+### Parallel Execution (Automated Task Pools)
 
 Chronos includes a powerful `parallel` module built to run massive jobs across threads or processes while perfectly maintaining your beautiful progress bars and memory safety.
 
@@ -36,27 +37,27 @@ Chronos includes a powerful `parallel` module built to run massive jobs across t
 from chronos import logger, parallel
 
 def my_worker(data_chunk):
-    # Logs inside workers are automatically routed to the main progress console!
     logger.info(f"Processing chunk {data_chunk}")
     return data_chunk * 2
 
 def my_prep(pool):
-    # Return an iterable of async results to keep memory low
     return [pool.apply_async(my_worker, (i,)) for i in range(100)]
 
 results = []
 def my_post(result):
     results.append(result)
 
-# This will automatically spin up processes, show a perfect progress bar,
-# and handle any tracebacks if a worker crashes.
-parallel.process_run(
+# Returns success and failure counts
+success, failure = parallel.process_run(
     prep_func=my_prep,
     post_func=my_post,
     desc="Processing Big Data",
     total=100,
     workers=4
 )
+
+# Generate a professional summary report!
+logger.summary("Data Pipeline Results", success_count=success, failure_count=failure)
 ```
 
 ### Basic Logging

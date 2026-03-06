@@ -39,6 +39,9 @@ try:
         TimeRemainingColumn,
     )
     from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.columns import Columns
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -56,6 +59,7 @@ if TYPE_CHECKING:
         def enable_system_metrics(self) -> None: ...
         def get_progress_queue(self) -> multiprocessing.Queue: ...
         def set_progress_queue(self, queue: multiprocessing.Queue) -> None: ...
+        def summary(self, title: str = "Execution Summary", success_count: int | None = None, failure_count: int | None = None) -> None: ...
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -87,6 +91,28 @@ for level_config in LOG_LEVELS:
         _logger.level(name, **config)
     except TypeError:
         pass
+
+# Global Stats Tracking
+_LOG_COUNTS = {level["name"]: 0 for level in LOG_LEVELS}
+_LOG_COUNTS["EXCEPTION"] = 0 # Track logger.exception calls
+
+_PATCHERS = []
+
+def _master_patcher(record):
+    """Executes all registered patchers exactly once per record."""
+    # Internal: Track stats
+    level_name = record["level"].name
+    if level_name in _LOG_COUNTS:
+        _LOG_COUNTS[level_name] += 1
+    if record["exception"]:
+        _LOG_COUNTS["EXCEPTION"] += 1
+    
+    # User registered patchers
+    for patch_func in _PATCHERS:
+        patch_func(record)
+
+# Configure the global master patcher
+_logger.configure(patcher=_master_patcher)
 
 # Global Start Time
 if "CHRONOS_START_TIME" not in os.environ:
@@ -367,11 +393,77 @@ def enable_system_metrics():
     Patches the logger to include CPU and Thread count in every log's 'extra' dict.
     Useful for high-density debugging.
     """
-    def patcher(record):
+    def metrics_patcher(record):
         record["extra"]["cpu_pct"] = psutil.cpu_percent()
         record["extra"]["thread_cnt"] = threading.active_count()
     
-    _logger.configure(patcher=patcher)
+    # Register the patcher if not already present
+    if not any(p.__name__ == "metrics_patcher" for p in _PATCHERS):
+        _PATCHERS.append(metrics_patcher)
+
+def summary(title: str = "Execution Summary", success_count: int | None = None, failure_count: int | None = None):
+    """
+    Displays a beautiful Rich panel with execution statistics, 
+    log counts, and system performance.
+    """
+    if not RICH_AVAILABLE:
+        print(f"--- {title} ---")
+        print(f"Total Runtime: {time.perf_counter() - float(os.environ['CHRONOS_START_TIME']):.2f}s")
+        return
+
+    # 1. Time Stats
+    runtime = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
+    
+    # 2. Log Stats Table
+    log_table = Table(box=None, padding=(0, 2))
+    log_table.add_column("Level", style="bold")
+    log_table.add_column("Count", justify="right")
+    
+    # Track if we have any stats to show
+    has_stats = False
+    for level, count in _LOG_COUNTS.items():
+        if count > 0:
+            has_stats = True
+            color = next((l["color"].strip("<>") for l in LOG_LEVELS if l["name"] == level), "white")
+            # Special handling for EXCEPTION which isn't in LOG_LEVELS
+            if level == "EXCEPTION": color = "red"
+            log_table.add_row(f"[{color}]{level}[/]", str(count))
+
+    # 3. Success/Failure Stats (if provided)
+    results_table = None
+    if success_count is not None or failure_count is not None:
+        has_stats = True
+        results_table = Table(box=None, padding=(0, 2))
+        results_table.add_column("Status", style="bold")
+        results_table.add_column("Count", justify="right")
+        if success_count is not None:
+            results_table.add_row("[green]Success[/]", str(success_count))
+        if failure_count is not None:
+            results_table.add_row("[red]Failure[/]", str(failure_count))
+
+    # 4. System Stats
+    mem = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    sys_info = f"[dim]Final Memory: {mem:.2f} MB | Runtime: {runtime:.2f}s[/]"
+
+    # Construct the content
+    content = []
+    if has_stats:
+        content.append(log_table)
+        if results_table:
+            content.append(results_table)
+    else:
+        content.append("[dim]No activity recorded.[/]")
+
+    _rich_console.print("\n")
+    _rich_console.print(
+        Panel(
+            Columns(content),
+            title=f"[bold cyan]{title}[/]",
+            subtitle=sys_info,
+            expand=False,
+            padding=(1, 2)
+        )
+    )
 
 def get_progress_queue():
     """Returns the current progress queue to be passed to child processes."""
@@ -390,6 +482,7 @@ setattr(_logger, "intercept_standard_logging", intercept_standard_logging)
 setattr(_logger, "enable_system_metrics", enable_system_metrics)
 setattr(_logger, "get_progress_queue", get_progress_queue)
 setattr(_logger, "set_progress_queue", set_progress_queue)
+setattr(_logger, "summary", summary)
 
 logger = cast("ChronosLogger", _logger)
 __all__ = ["logger"]

@@ -35,6 +35,9 @@ def execute(
     PoolClass = Pool if mode == "process" else ThreadPool
     
     # Start the global progress manager
+    success_count = 0
+    failure_count = 0
+
     with logger.progress(transient=False) as p:
         main_task = p.add_task(f"[green]{desc}", total=total)
         
@@ -59,10 +62,13 @@ def execute(
                         # 3. POST
                         if post_func:
                             post_func(data)
+                        
+                        success_count += 1
                             
                     except Exception as e:
                         # Use logger.opt to preserve the rich tree-style traceback of the worker crash
                         logger.opt(exception=True).error(f"Worker task failed during '{desc}'")
+                        failure_count += 1
                         
                     finally:
                         # Update progress regardless of success or failure
@@ -77,6 +83,8 @@ def execute(
             # Normal cleanup
             pool.close()
             pool.join()
+    
+    return success_count, failure_count
 
 def process_run(prep_func: Callable, post_func: Callable, desc: str, total: int, workers: int | None = None):
     """Helper to run execute() in multiprocess mode."""
