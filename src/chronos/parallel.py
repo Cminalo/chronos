@@ -21,21 +21,14 @@ def execute(
 ) -> tuple[int, int, list[Any]]:
     """
     Executes a parallel workflow using a prep -> execute -> post pattern.
-    
-    Args:
-        mode: "process" for CPU-bound tasks, "thread" for IO-bound tasks.
-        prep_func: A function that takes the Pool as an argument and returns an iterable 
-                   of async results OR tuples of (input, async_result).
-                   Format A: lambda pool: [pool.apply_async(f, (i,)) for i in data]
-                   Format B: lambda pool: [(i, pool.apply_async(f, (i,))) for i in data]
-        post_func: A function called with the result of each completed task.
-        desc: Description for the global progress bar.
-        total: Expected number of tasks.
-        workers: Number of parallel workers.
-
-    Returns:
-        A tuple of (success_count, failure_count, failed_inputs).
     """
+    # Safety check to prevent fork bombs on macOS/Windows (spawn method)
+    if mode == "process" and multiprocessing.current_process().name != "MainProcess":
+        raise RuntimeError(
+            "Fatal: parallel.process_run() must be called from within an "
+            "'if __name__ == \"__main__\":' block to prevent recursive spawning."
+        )
+
     queue = logger.get_progress_queue()
     PoolClass = Pool if mode == "process" else ThreadPool
     

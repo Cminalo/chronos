@@ -47,19 +47,23 @@ def my_prep(pool):
     data = range(20)
     return [(i, pool.apply_async(my_worker, (i,))) for i in data]
 
-# Returns success count, failure count, AND the list of failed inputs
-success, failure, failed_inputs = parallel.process_run(
-    prep_func=my_prep,
-    post_func=lambda r: None,
-    desc="Processing Data",
-    total=20
-)
+def main():
+    # Returns success count, failure count, AND the list of failed inputs
+    success, failure, failed_inputs = parallel.process_run(
+        prep_func=my_prep,
+        post_func=lambda r: None,
+        desc="Processing Data",
+        total=20
+    )
 
-if failed_inputs:
-    logger.error(f"The following inputs failed: {failed_inputs}")
-    # These are also saved in logs/failures_{date}.log with full tracebacks!
+    if failed_inputs:
+        logger.error(f"The following inputs failed: {failed_inputs}")
+        # These are also saved in logs/failures_{date}.log with full tracebacks!
 
-logger.summary("Execution Results", success_count=success, failure_count=failure)
+    logger.summary("Execution Results", success_count=success, failure_count=failure)
+
+if __name__ == "__main__":
+    main()
 ```
 
 ### Basic Logging & Silencing
