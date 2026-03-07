@@ -54,11 +54,12 @@ if TYPE_CHECKING:
     class ChronosLogger(Logger):
         def benchmark(self, name: str = "Operation") -> AbstractContextManager[None]: ...
         def memory(self, message: str = "Memory check") -> None: ...
-        def progress(self, transient: bool = False) -> "Progress": ...
+        def progress(self, transient: bool = False) -> AbstractContextManager["Progress"]: ...
         def intercept_standard_logging(self) -> None: ...
         def enable_system_metrics(self) -> None: ...
         def get_progress_queue(self) -> multiprocessing.Queue: ...
         def set_progress_queue(self, queue: multiprocessing.Queue) -> None: ...
+        def reset_progress_queue(self) -> None: ...
         def summary(self, title: str = "Execution Summary", success_count: int | None = None, failure_count: int | None = None) -> None: ...
         def silence(self, *module_names: str) -> None: ...
 
@@ -88,14 +89,27 @@ LOG_LEVELS = [
     {"name": "CRITICAL", "color": "<red><bold>"},
 ]
 
-# Apply custom levels and colors
-for level_config in LOG_LEVELS:
-    config = level_config.copy()
-    name = config.pop("name")
-    try:
-        _logger.level(name, **config)
-    except TypeError:
-        pass
+# Apply custom levels and colors (only once per process)
+if not getattr(_logger, "_chronos_levels_configured", False):
+    for level_config in LOG_LEVELS:
+        config = level_config.copy()
+        name = config.pop("name")
+        
+        try:
+            # Check if the level exists by attempting to retrieve it
+            _logger.level(name)
+            # If it exists, Loguru doesn't allow changing the level number 'no'.
+            config.pop("no", None)
+        except ValueError:
+            pass # Level doesn't exist yet
+
+        try:
+            _logger.level(name, **config)
+        except (TypeError, ValueError):
+            pass
+
+    # Mark as configured so re-imports don't trigger redeclarations
+    setattr(_logger, "_chronos_levels_configured", True)
 
 # Global Stats Tracking
 _LOG_COUNTS = {level["name"]: 0 for level in LOG_LEVELS}
@@ -263,49 +277,66 @@ class RemoteProgress:
     def __enter__(self): return self
     def __exit__(self, exc_type, exc_val, exc_tb): pass
 
-def _main_listener(queue: multiprocessing.Queue, progress_instance: "Progress"):
-    """Background thread in the main process that listens for progress AND log updates."""
-    tasks = {}
-    with progress_instance:
-        while True:
-            msg = queue.get()
-            if msg is None: # Sentinel for shutdown
-                break
-            
-            category = msg[0]
-            
-            if category == "progress":
-                action = msg[1]
-                if action == "add":
-                    _, _, tid, desc, total, kwargs = msg
-                    tasks[tid] = progress_instance.add_task(desc, total=total, **kwargs)
-                elif action == "update":
-                    _, _, tid, advance, kwargs = msg
-                    if tid in tasks:
-                        progress_instance.update(tasks[tid], advance=advance, **kwargs)
-            
-            elif category == "log":
-                # Print the proxied log message through the main console
-                _, formatted_msg = msg
-                _rich_console.print(formatted_msg, end="", markup=False, highlight=False)
-
 _PROGRESS_QUEUE = None
 _LISTENER_THREAD = None
+_LISTENER_LOCK = threading.Lock()
+_ACTIVE_PROGRESS = None # Tracks the currently active Rich progress instance
 
-def progress(transient: bool = False):
+def _main_listener(queue: multiprocessing.Queue):
+    """Background thread in the main process that listens for progress AND log updates."""
+    tasks = {}
+    while True:
+        try:
+            # We use a timeout to ensure the thread is periodically wakeable 
+            # and doesn't get stuck if the queue is suddenly closed.
+            msg = queue.get(timeout=0.1)
+        except (ValueError, EOFError, OSError, TypeError):
+            break
+        except Exception: # Empty queue timeout
+            continue
+        
+        if msg is None: # Sentinel for shutdown
+            break
+        
+        # Always route to the currently active progress instance
+        p = _ACTIVE_PROGRESS
+        if p is None and msg[0] == "progress":
+            continue
+
+        category = msg[0]
+        
+        if category == "progress":
+            action = msg[1]
+            if action == "add":
+                _, _, tid, desc, total, kwargs = msg
+                tasks[tid] = p.add_task(desc, total=total, **kwargs)
+            elif action == "update":
+                _, _, tid, advance, kwargs = msg
+                if tid in tasks:
+                    p.update(tasks[tid], advance=advance, **kwargs)
+        
+        elif category == "log":
+            # Instead of printing directly, we log it raw. 
+            # This ensures it goes through the main thread's logging synchronization.
+            _, formatted_msg = msg
+            _logger.opt(raw=True).info(formatted_msg)
+
+@contextmanager
+def progress(transient: bool = False) -> Generator[Progress, None, None]:
     """
-    Returns a progress manager. 
-    In the Main Process: Returns a real Rich Progress and starts a listener for child updates.
-    In Child Processes: Returns a RemoteProgress proxy if logger.progress_queue is set.
+    Returns a progress manager context manager. 
+    In the Main Process: Manages a real Rich Progress and the listener thread.
+    In Child Processes: Returns a RemoteProgress proxy.
     """
-    global _PROGRESS_QUEUE, _LISTENER_THREAD
+    global _PROGRESS_QUEUE, _LISTENER_THREAD, _ACTIVE_PROGRESS
     
     if not RICH_AVAILABLE:
         raise ImportError("The 'rich' library is required. Install with: pip install rich")
 
-    # If we are in a child process and have a queue, return a proxy
+    # If we are in a child process and have a queue, yield a proxy
     if multiprocessing.current_process().name != "MainProcess" and _PROGRESS_QUEUE:
-        return RemoteProgress(_PROGRESS_QUEUE)
+        yield cast(Progress, RemoteProgress(_PROGRESS_QUEUE))
+        return
         
     # In Main Process, create a real Progress
     p = Progress(
@@ -319,42 +350,60 @@ def progress(transient: bool = False):
         console=_rich_console,
         transient=transient,
     )
-
-    # Start the listener thread if we want to support child updates
-    if _PROGRESS_QUEUE is None:
-        _PROGRESS_QUEUE = multiprocessing.Queue()
-        
-    _LISTENER_THREAD = threading.Thread(
-        target=_main_listener, 
-        args=(_PROGRESS_QUEUE, p),
-        daemon=True
-    )
-    _LISTENER_THREAD.start()
     
-    return p
+    _ACTIVE_PROGRESS = p
+
+    with _LISTENER_LOCK:
+        if _PROGRESS_QUEUE is None:
+            _PROGRESS_QUEUE = multiprocessing.Queue()
+            
+        if _LISTENER_THREAD is None or not _LISTENER_THREAD.is_alive():
+            _LISTENER_THREAD = threading.Thread(
+                target=_main_listener, 
+                args=(_PROGRESS_QUEUE,),
+                daemon=True
+            )
+            _LISTENER_THREAD.start()
+    
+    try:
+        with p:
+            yield p
+    finally:
+        _ACTIVE_PROGRESS = None
 
 def set_progress_queue(queue: multiprocessing.Queue):
     """Set the queue used for remote progress updates (call this in child processes)."""
     global _PROGRESS_QUEUE
     _PROGRESS_QUEUE = queue
     
-    # ThreadPool workers run in the MainProcess. We MUST NOT remove sinks here,
-    # as they share the memory space and are already thread-safe.
     if multiprocessing.current_process().name == "MainProcess":
         return
         
-    # If we are in a true child process, redirect all console logs to the queue
     _logger.remove()
-    
-    # Re-add file sinks (they still work fine in children)
     _logger.add(LOG_FILE_PATH, level="TRACE", rotation="00:00", retention="10 days", compression="zip", format=file_formatter, enqueue=True)
     _logger.add(JSON_LOG_FILE_PATH, level="TRACE", rotation="00:00", retention="10 days", compression="zip", serialize=True, enqueue=True)
     
-    # Add the Proxy Sink for console logs
     def proxy_sink(message):
-        queue.put(("log", message))
+        try:
+            queue.put(("log", message))
+        except (ValueError, EOFError, BrokenPipeError):
+            pass 
         
     _logger.add(proxy_sink, level=os.getenv("LOGGER_LEVEL", "INFO").upper(), format=file_formatter, colorize=True)
+
+def reset_progress_queue():
+    """Shuts down and clears the global progress queue state."""
+    global _PROGRESS_QUEUE, _LISTENER_THREAD, _ACTIVE_PROGRESS
+    _ACTIVE_PROGRESS = None
+    with _LISTENER_LOCK:
+        if _PROGRESS_QUEUE is not None:
+            try:
+                _PROGRESS_QUEUE.put(None)
+                _PROGRESS_QUEUE.close()
+            except (ValueError, EOFError, BrokenPipeError):
+                pass
+            _PROGRESS_QUEUE = None
+        _LISTENER_THREAD = None
 
 # 9. Global Exception Hook
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -512,6 +561,7 @@ setattr(_logger, "intercept_standard_logging", intercept_standard_logging)
 setattr(_logger, "enable_system_metrics", enable_system_metrics)
 setattr(_logger, "get_progress_queue", get_progress_queue)
 setattr(_logger, "set_progress_queue", set_progress_queue)
+setattr(_logger, "reset_progress_queue", reset_progress_queue)
 setattr(_logger, "summary", summary)
 setattr(_logger, "silence", silence)
 
