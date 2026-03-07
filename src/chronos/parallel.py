@@ -76,11 +76,10 @@ def execute(
                         success_count += 1
                             
                     except Exception:
-                        # Log to standard log (visible in console/file)
-                        logger.opt(exception=True).error(f"Worker task failed during '{desc}'")
-                        
-                        # Log to dedicated failure log (not visible in console unless level is high)
-                        fail_msg = f"Task failed for input: {input_val}" if input_val is not None else "Task failed (unknown input)"
+                        # Log the failure once. Because we bind is_failure=True, it will 
+                        # automatically be routed to the failures.log file while also 
+                        # appearing beautifully in the terminal and standard logs.
+                        fail_msg = f"Task failed during '{desc}' (Input: {input_val})" if input_val is not None else f"Task failed during '{desc}'"
                         logger.bind(is_failure=True).opt(exception=True).error(fail_msg)
                         
                         if input_val is not None:
