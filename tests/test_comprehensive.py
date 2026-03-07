@@ -137,11 +137,12 @@ def test_parallel_thread_recovery(setup_logger):
         data = [1, -1, 3]
         return [(item, pool.apply_async(worker_sq, (item,))) for item in data]
     
-    s, f, failed = parallel.thread_run(prep, lambda x: None, "Thread Recovery", 3)
+    s, f, failed, results = parallel.thread_run(prep, lambda x: None, "Thread Recovery", 3)
     
     assert s == 2
     assert f == 1
     assert failed == [-1]
+    assert sorted(results) == [1, 9]
     
     # Check failure log
     fail_content = setup_logger["fail"].read_text()
@@ -153,9 +154,27 @@ def test_parallel_process_basic(setup_logger):
     def prep(pool):
         return [pool.apply_async(worker_sq, (i,)) for i in range(2)]
     
-    s, f, failed = parallel.process_run(prep, lambda x: None, "Process Basic", 2, workers=2)
+    s, f, failed, results = parallel.process_run(prep, lambda x: None, "Process Basic", 2, workers=2)
     assert s == 2
     assert f == 0
+    assert sorted(results) == [0, 1]
+
+def test_parallel_diverse_returns(setup_logger):
+    """Verify that multiple return types (None, dict, tuple) are correctly handled and collected."""
+    def diverse_worker(x):
+        if x == 0: return None
+        if x == 1: return {"key": "val"}
+        return (x, [1, 2])
+
+    def prep(pool):
+        return [pool.apply_async(diverse_worker, (i,)) for i in range(3)]
+    
+    s, f, failed, results = parallel.thread_run(prep, None, "Diverse Returns", 3)
+    
+    assert s == 3
+    assert None in results
+    assert {"key": "val"} in results
+    assert (2, [1, 2]) in results
 
 def test_summary_panel(setup_logger, capsys):
     """Verify summary panel prints to rich console."""
@@ -173,9 +192,10 @@ def test_fork_bomb_safety():
     
     try:
         # Should NOT raise an exception, but return early to prevent the fork bomb
-        s, f, failed = parallel.execute("process", lambda p: [], lambda x: None, "Safety", 0)
+        s, f, failed, results = parallel.execute("process", lambda p: [], lambda x: None, "Safety", 0)
         assert s == 0
         assert f == 0
         assert failed == []
+        assert results == []
     finally:
         multiprocessing.current_process().name = original_name
