@@ -24,10 +24,11 @@ def execute(
     """
     # Safety check to prevent fork bombs on macOS/Windows (spawn method)
     if mode == "process" and multiprocessing.current_process().name != "MainProcess":
-        raise RuntimeError(
-            "Fatal: parallel.process_run() must be called from within an "
-            "'if __name__ == \"__main__\":' block to prevent recursive spawning."
-        )
+        print("\n\033[91mCRITICAL ERROR: multiprocessing fork bomb detected!\033[0m")
+        print("\033[93mYou MUST wrap your execution code in an 'if __name__ == \"__main__\":' block.\033[0m")
+        print("See the README for the correct usage pattern.\n")
+        import os
+        os._exit(1) # Immediately terminate the child process to stop the recursive loop
 
     queue = logger.get_progress_queue()
     PoolClass = Pool if mode == "process" else ThreadPool
