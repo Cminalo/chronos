@@ -81,8 +81,8 @@ packages:
   timestamp: 1767500828366
 - pypi: ./
   name: chronos-logger
-  version: 0.7.4
-  sha256: 43cadd7fad74c5b74487f6065db817fdf1451e9394614e9f70f6c9061c8700ec
+  version: 0.7.1
+  sha256: efa7421ccf3f96e3c520acc2a00c12b63d075cb7d790287568d744e83989f323
   requires_dist:
   - loguru>=0.7.3
   - python-dotenv>=1.0.1

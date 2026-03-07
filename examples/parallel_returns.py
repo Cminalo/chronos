@@ -70,17 +70,23 @@ def process_results(worker_result):
 def main():
     logger.info("Starting Parallel execution with multiple return types")
     
-    # Important: Run this inside if __name__ == "__main__"
-    success, failure, failed_inputs = parallel.process_run(
+    # 3. GET YOUR RETURNS:
+    # The `results` list contains every value returned by your worker functions.
+    success, failure, failed_inputs, results = parallel.process_run(
         prep_func=prepare_tasks,
-        post_func=process_results,
+        post_func=process_results, # post_func still runs for side-effects
         desc="Processing Diverse Returns",
         total=10,
         workers=4
     )
     
     logger.summary("Return Types Example", success_count=success, failure_count=failure)
-    logger.info(f"Final collected items count: {len(collected_results)}")
+    
+    # You can now access your dictionaries/tuples directly from the results list!
+    logger.info(f"Successfully collected {len(results)} items via direct return.")
+    
+    for i, item in enumerate(results):
+        logger.debug(f"Result {i}: {type(item).__name__} = {item}")
 
 if __name__ == "__main__":
     main()

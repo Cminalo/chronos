@@ -39,7 +39,7 @@ def execute(
     desc: str,
     total: int,
     workers: int | None = None,
-) -> tuple[int, int, list[Any]]:
+) -> tuple[int, int, list[Any], list[Any]]:
     """
     Execute a set of tasks in parallel using a process or thread pool.
 
@@ -61,8 +61,8 @@ def execute(
 
     Returns
     -------
-    tuple[int, int, list[Any]]
-        A tuple containing (success_count, failure_count, failed_inputs).
+    tuple[int, int, list[Any], list[Any]]
+        A tuple containing (success_count, failure_count, failed_inputs, results).
 
     Raises
     ------
@@ -80,7 +80,7 @@ def execute(
             "Chronos gracefully intercepted this to prevent a multiprocessing fork bomb.\n"
             "Please wrap your top-level execution code in the main block to ensure correct behavior."
         )
-        return 0, 0, []
+        return 0, 0, [], []
 
     queue = logger.get_progress_queue()
     PoolClass = Pool if mode == "process" else ThreadPool
@@ -88,6 +88,7 @@ def execute(
     success_count = 0
     failure_count = 0
     failed_inputs = []
+    results = []
 
     # Initialize the pool outside the progress context to ensure we can close/join it correctly.
     pool = PoolClass(processes=workers, initializer=_worker_init, initargs=(queue,))
@@ -123,6 +124,7 @@ def execute(
                     if post_func:
                         post_func(data)
 
+                    results.append(data)
                     success_count += 1
 
                 except Exception:
@@ -162,7 +164,7 @@ def execute(
         time.sleep(0.01)
         pool.join()
 
-    return success_count, failure_count, failed_inputs
+    return success_count, failure_count, failed_inputs, results
 
 
 def process_run(
@@ -171,7 +173,7 @@ def process_run(
     desc: str,
     total: int,
     workers: int | None = None,
-) -> tuple[int, int, list[Any]]:
+) -> tuple[int, int, list[Any], list[Any]]:
     """
     Submit tasks to a process pool for execution.
 
@@ -190,8 +192,8 @@ def process_run(
 
     Returns
     -------
-    tuple[int, int, list[Any]]
-        (success_count, failure_count, failed_inputs).
+    tuple[int, int, list[Any], list[Any]]
+        (success_count, failure_count, failed_inputs, results).
     """
     return execute("process", prep_func, post_func, desc, total, workers)
 
@@ -202,7 +204,7 @@ def thread_run(
     desc: str,
     total: int,
     workers: int | None = None,
-) -> tuple[int, int, list[Any]]:
+) -> tuple[int, int, list[Any], list[Any]]:
     """
     Submit tasks to a thread pool for execution.
 
@@ -221,7 +223,7 @@ def thread_run(
 
     Returns
     -------
-    tuple[int, int, list[Any]]
-        (success_count, failure_count, failed_inputs).
+    tuple[int, int, list[Any], list[Any]]
+        (success_count, failure_count, failed_inputs, results).
     """
     return execute("thread", prep_func, post_func, desc, total, workers)
