@@ -137,7 +137,7 @@ def test_parallel_thread_recovery(setup_logger):
         data = [1, -1, 3]
         return [(item, pool.apply_async(worker_sq, (item,))) for item in data]
     
-    s, f, failed, results = parallel.thread_run(prep, lambda x: None, "Thread Recovery", 3)
+    s, f, failed, results = parallel.thread_run(prep, lambda x: x, "Thread Recovery", 3)
     
     assert s == 2
     assert f == 1
@@ -154,7 +154,7 @@ def test_parallel_process_basic(setup_logger):
     def prep(pool):
         return [pool.apply_async(worker_sq, (i,)) for i in range(2)]
     
-    s, f, failed, results = parallel.process_run(prep, lambda x: None, "Process Basic", 2, workers=2)
+    s, f, failed, results = parallel.process_run(prep, lambda x: x, "Process Basic", 2, workers=2)
     assert s == 2
     assert f == 0
     assert sorted(results) == [0, 1]

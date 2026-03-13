@@ -122,7 +122,7 @@ def execute(
                     data = result.get()
 
                     if post_func:
-                        post_func(data)
+                        data = post_func(data)
 
                     results.append(data)
                     success_count += 1

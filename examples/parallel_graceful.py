@@ -20,7 +20,7 @@ logger.info("Calling process_run without a __main__ guard...")
 
 # ⚠️ This is usually dangerous on macOS/Windows!
 # Chronos will detect the spawn loop, print a warning, and return instantly.
-success, fail, failed_inputs = parallel.process_run(
+success, fail, failed_inputs, results = parallel.process_run(
     prep_func=prep,
     post_func=lambda r: logger.info(f"Got {r}"),
     desc="Dangerous Execution",
