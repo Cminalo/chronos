@@ -81,15 +81,15 @@ packages:
   timestamp: 1767500828366
 - pypi: ./
   name: chronos-logger
-  version: 0.7.1
-  sha256: efa7421ccf3f96e3c520acc2a00c12b63d075cb7d790287568d744e83989f323
+  version: 0.7.6
+  sha256: 60306c07099a922d64ea6b96e2d751db41ba1110f655bd15f996daf1839471b7
   requires_dist:
   - loguru>=0.7.3
   - python-dotenv>=1.0.1
   - psutil>=7.2.0
   - rich>=14.3.0
   - pytest ; extra == 'dev'
-  requires_python: '>=3.11'
+  requires_python: '>=3.10'
 - conda: https://conda.anaconda.org/conda-forge/osx-arm64/icu-78.2-h38cb7af_0.conda
   sha256: d4cefbca587429d1192509edc52c88de52bc96c2447771ddc1f8bee928aed5ef
   md5: 1e93aca311da0210e660d2247812fa02
