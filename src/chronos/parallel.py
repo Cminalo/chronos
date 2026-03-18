@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import signal
 import time
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
@@ -22,12 +23,16 @@ if TYPE_CHECKING:
 def _worker_init(queue: Queue[Any] | None) -> None:
     """
     Initialize a worker process or thread with the global progress queue.
+    Also ensures workers ignore SIGINT so the main process can handle Ctrl+C.
 
     Parameters
     ----------
     queue : multiprocessing.Queue[Any] | None
         The progress queue used for inter-process communication of progress updates.
     """
+    # Ignore SIGINT in workers so only the main process handles KeyboardInterrupt
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    
     if queue is not None:
         logger.set_progress_queue(queue)
 
@@ -89,6 +94,7 @@ def execute(
     failure_count = 0
     failed_inputs = []
     results = []
+    interrupted = False
 
     # Initialize the pool outside the progress context to ensure we can close/join it correctly.
     pool = PoolClass(processes=workers, initializer=_worker_init, initargs=(queue,))
@@ -117,9 +123,14 @@ def execute(
                         result = item[0]
 
                 try:
-                    # result.get() blocks until the specific task finishes.
-                    # It returns exactly what the worker function returned (None, value, or tuple).
-                    data = result.get()
+                    # We use a timeout in get() to ensure the main thread remains responsive 
+                    # to KeyboardInterrupt (SIGINT) on all platforms.
+                    while True:
+                        try:
+                            data = result.get(timeout=1.0)
+                            break
+                        except multiprocessing.TimeoutError:
+                            continue
 
                     if post_func:
                         data = post_func(data)
@@ -127,6 +138,9 @@ def execute(
                     results.append(data)
                     success_count += 1
 
+                except KeyboardInterrupt:
+                    # Re-raise to be caught by the outer block
+                    raise
                 except Exception:
                     fail_msg = (
                         f"Task failed during '{desc}' (Input: {input_val})"
@@ -143,6 +157,7 @@ def execute(
                     p.update(main_task, advance=1)
 
     except KeyboardInterrupt:
+        interrupted = True
         logger.warning(f"\nExecution interrupted by user. Cleaning up {mode}s...")
         pool.terminate()
         raise
@@ -161,7 +176,10 @@ def execute(
         
         # A tiny delay helps workers finish flushing their final logs to the queue 
         # before we block on pool.join(), which is critical for debugger stability.
-        time.sleep(0.01)
+        # However, we skip this if interrupted to ensure a fast Ctrl+C exit.
+        if not interrupted:
+            time.sleep(0.01)
+
         pool.join()
 
     return success_count, failure_count, failed_inputs, results
