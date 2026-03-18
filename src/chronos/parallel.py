@@ -30,8 +30,10 @@ def _worker_init(queue: Queue[Any] | None) -> None:
     queue : multiprocessing.Queue[Any] | None
         The progress queue used for inter-process communication of progress updates.
     """
-    # Ignore SIGINT in workers so only the main process handles KeyboardInterrupt
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # Ignore SIGINT in workers so only the main process handles KeyboardInterrupt.
+    # We MUST NOT do this in ThreadPool threads, as signal() only works in the main thread.
+    if multiprocessing.current_process().name != "MainProcess":
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     
     if queue is not None:
         logger.set_progress_queue(queue)
