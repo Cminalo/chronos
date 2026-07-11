@@ -7,11 +7,11 @@ dependencies = [
     "rich>=14.3.0",
 ]
 name = "chronos-logger"
-requires-python = ">= 3.10"
+requires-python = ">= 3.11"
 version = "0.7.9"
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest>=8,<9", "mypy>=1.15,<2", "ruff>=0.9,<1"]
 
 [build-system]
 build-backend = "hatchling.build"
@@ -20,14 +20,33 @@ requires = ["hatchling"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/chronos"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = ["tests/"]
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64"]
 
 [tool.pixi.pypi-dependencies]
 chronos-logger = { path = ".", editable = true, extras = ["dev"] }
+build = ">=1.5.0,<2"
 
 [tool.pixi.tasks]
+test = "pixi run python -m pytest"
+lint = "pixi run ruff check"
+lint-check = "pixi run ruff check --diff"
+fmt = "pixi run ruff format"
+fmt-check = "pixi run ruff format --diff"
+typecheck = "mypy src/chronos"
+build = "pixi run python -m build"
 
 [tool.pixi.dependencies]
 python = "3.13.*"

@@ -14,3 +14,6 @@ __pycache__/
 *$py.class
 *.whl
 *.tar.gz
+
+# Build artifacts
+dist/
