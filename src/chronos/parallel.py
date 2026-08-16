@@ -8,13 +8,12 @@ with integrated progress reporting and error handling.
 from __future__ import annotations
 
 import multiprocessing
-import os
 import signal
 import time
 from multiprocessing.pool import Pool, ThreadPool
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, TypeVar, cast
 
-from chronos import logger
+from chronos.logger import logger
 
 if TYPE_CHECKING:
     from multiprocessing.queues import Queue
@@ -34,14 +33,17 @@ def _worker_init(queue: Queue[Any] | None) -> None:
     # We MUST NOT do this in ThreadPool threads, as signal() only works in the main thread.
     if multiprocessing.current_process().name != "MainProcess":
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-    
+
     if queue is not None:
         logger.set_progress_queue(queue)
 
 
+_PoolT = TypeVar("_PoolT", Pool, ThreadPool)
+
+
 def execute(
     mode: Literal["process", "thread"],
-    prep_func: Callable[[Pool | ThreadPool], Iterable[Any | tuple[Any, Any]]],
+    prep_func: Callable[[_PoolT], Iterable[Any | tuple[Any, Any]]],
     post_func: Callable[[Any], None] | None,
     desc: str,
     total: int,
@@ -106,7 +108,7 @@ def execute(
             main_task = p.add_task(f"[green]{desc}", total=total)
 
             # 1. PREP: Submit tasks to the pool
-            prep_data = prep_func(pool)
+            prep_data = prep_func(cast(Any, pool))
 
             # 2. EXECUTE & POST: Collect results
             for item in prep_data:
@@ -125,7 +127,7 @@ def execute(
                         result = item[0]
 
                 try:
-                    # We use a timeout in get() to ensure the main thread remains responsive 
+                    # We use a timeout in get() to ensure the main thread remains responsive
                     # to KeyboardInterrupt (SIGINT) on all platforms.
                     while True:
                         try:
@@ -172,11 +174,11 @@ def execute(
         pool.close()
     finally:
         # 3. CRITICAL CLEANUP: Prevent semaphore leaks and zombie processes
-        # We do NOT reset the progress queue here, as it can cause deadlocks 
+        # We do NOT reset the progress queue here, as it can cause deadlocks
         # when multiple parallel runs occur or when a debugger is attached.
         # The queue and listener thread will persist for the life of the process.
-        
-        # A tiny delay helps workers finish flushing their final logs to the queue 
+
+        # A tiny delay helps workers finish flushing their final logs to the queue
         # before we block on pool.join(), which is critical for debugger stability.
         # However, we skip this if interrupted to ensure a fast Ctrl+C exit.
         if not interrupted:

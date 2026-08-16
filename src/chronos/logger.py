@@ -11,6 +11,8 @@ It supports:
 - Custom formatting
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import time
@@ -19,15 +21,16 @@ import multiprocessing
 import psutil
 import logging
 from contextlib import contextmanager
+from types import TracebackType
 from pathlib import Path
-from typing import Generator, TYPE_CHECKING, cast
+from typing import Generator, TYPE_CHECKING, cast, Any, Callable
 
 from dotenv import load_dotenv
 from loguru import logger as _logger
 
 # Rich Integration
 try:
-    from rich.logging import RichHandler
+    from rich.logging import RichHandler  # noqa: F401 - availability probe
     from rich.progress import (
         Progress,
         SpinnerColumn,
@@ -37,31 +40,43 @@ try:
         MofNCompleteColumn,
         TimeElapsedColumn,
         TimeRemainingColumn,
+        TaskID,
     )
     from rich.console import Console
     from rich.panel import Panel
     from rich.table import Table
     from rich.columns import Columns
+
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
 
 if TYPE_CHECKING:
-    from loguru import Logger
+    from loguru import Logger, Message, Record
     from contextlib import AbstractContextManager
-    
+
     # Define a protocol/class for the custom logger to support autocomplete
     class ChronosLogger(Logger):
-        def benchmark(self, name: str = "Operation") -> AbstractContextManager[None]: ...
+        def benchmark(
+            self, name: str = "Operation"
+        ) -> AbstractContextManager[None]: ...
         def memory(self, message: str = "Memory check") -> None: ...
-        def progress(self, transient: bool = False) -> AbstractContextManager["Progress"]: ...
+        def progress(
+            self, transient: bool = False
+        ) -> AbstractContextManager["Progress"]: ...
         def intercept_standard_logging(self) -> None: ...
         def enable_system_metrics(self) -> None: ...
-        def get_progress_queue(self) -> multiprocessing.Queue: ...
-        def set_progress_queue(self, queue: multiprocessing.Queue) -> None: ...
+        def get_progress_queue(self) -> multiprocessing.Queue[Any]: ...
+        def set_progress_queue(self, queue: multiprocessing.Queue[Any]) -> None: ...
         def reset_progress_queue(self) -> None: ...
-        def summary(self, title: str = "Execution Summary", success_count: int | None = None, failure_count: int | None = None) -> None: ...
+        def summary(
+            self,
+            title: str = "Execution Summary",
+            success_count: int | None = None,
+            failure_count: int | None = None,
+        ) -> None: ...
         def silence(self, *module_names: str) -> None: ...
+
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -77,7 +92,7 @@ FAILURES_LOG_FILE_PATH = LOG_DIR / "failures_{time:YYYY-MM-DD}.log"
 _SILENCED_MODULES = set()
 
 # 3. Configure Levels & Colors
-LOG_LEVELS = [
+LOG_LEVELS: list[dict[str, Any]] = [
     {"name": "TRACE", "color": "<dim>"},
     {"name": "DEBUG", "color": "<cyan>"},
     {"name": "INFO", "color": "<white>"},
@@ -94,14 +109,14 @@ if not getattr(_logger, "_chronos_levels_configured", False):
     for level_config in LOG_LEVELS:
         config = level_config.copy()
         name = config.pop("name")
-        
+
         try:
             # Check if the level exists by attempting to retrieve it
             _logger.level(name)
             # If it exists, Loguru doesn't allow changing the level number 'no'.
             config.pop("no", None)
         except ValueError:
-            pass # Level doesn't exist yet
+            pass  # Level doesn't exist yet
 
         try:
             _logger.level(name, **config)
@@ -113,11 +128,12 @@ if not getattr(_logger, "_chronos_levels_configured", False):
 
 # Global Stats Tracking
 _LOG_COUNTS = {level["name"]: 0 for level in LOG_LEVELS}
-_LOG_COUNTS["EXCEPTION"] = 0 # Track logger.exception calls
+_LOG_COUNTS["EXCEPTION"] = 0  # Track logger.exception calls
 
-_PATCHERS = []
+_PATCHERS: list[Callable[[Record], None]] = []
 
-def _master_patcher(record):
+
+def _master_patcher(record: Record) -> None:
     """Executes all registered patchers exactly once per record."""
     # Internal: Track stats
     level_name = record["level"].name
@@ -125,10 +141,11 @@ def _master_patcher(record):
         _LOG_COUNTS[level_name] += 1
     if record["exception"]:
         _LOG_COUNTS["EXCEPTION"] += 1
-    
+
     # User registered patchers
     for patch_func in _PATCHERS:
         patch_func(record)
+
 
 # Configure the global master patcher
 _logger.configure(patcher=_master_patcher)
@@ -137,13 +154,18 @@ _logger.configure(patcher=_master_patcher)
 if "CHRONOS_START_TIME" not in os.environ:
     os.environ["CHRONOS_START_TIME"] = str(time.perf_counter())
 
+
 # 4. Custom Formatters
-def file_formatter(record: dict) -> str:
+def file_formatter(record: Record) -> str:
     """Format used for text files (standard loguru syntax)"""
     message_format = "{message}"
     if "duration" in record["extra"]:
         global_time = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
-        message_format = "{message} (Duration: {extra[duration]:.4f}s, Global: " + f"{global_time:.4f}s" + ")"
+        message_format = (
+            "{message} (Duration: {extra[duration]:.4f}s, Global: "
+            + f"{global_time:.4f}s"
+            + ")"
+        )
     if "memory_mb" in record["extra"]:
         message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
 
@@ -155,11 +177,12 @@ def file_formatter(record: dict) -> str:
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level: <9}</level> | "
         "<dim>[P:{process.id}|T:{thread.id}]</dim>" + ctx_id + " | "
-        f"\"{message_format}\" | "
+        f'"{message_format}" | '
         "<cyan>{name}</cyan> -> "
         "<cyan>{function}</cyan> -> "
         "<cyan>{line}</cyan>\n{exception}"
     )
+
 
 # 5. Configure Sinks
 _logger.remove()
@@ -171,9 +194,13 @@ use_rich = os.getenv("RICH_CONSOLE", "True").lower() in ("true", "1", "yes")
 # We must explicitly set file=sys.stderr so it perfectly synchronizes with Loguru's output stream.
 _rich_console = Console(file=sys.stderr) if RICH_AVAILABLE else None
 
-def rich_console_sink(message):
+
+def rich_console_sink(message: Message) -> None:
     """Custom sink that forces Loguru to use Rich's print, preventing progress bar tearing."""
+    if _rich_console is None:
+        return
     _rich_console.print(message, end="", markup=False, highlight=False)
+
 
 if RICH_AVAILABLE and use_rich:
     # Rich Console Sink
@@ -182,7 +209,7 @@ if RICH_AVAILABLE and use_rich:
         level=console_level,
         format=file_formatter,
         colorize=True,
-        enqueue=False, # Must be False to prevent background thread terminal tearing with Progress bars
+        enqueue=False,  # Must be False to prevent background thread terminal tearing with Progress bars
         backtrace=True,
         diagnose=True,
     )
@@ -238,6 +265,7 @@ _logger.add(
     diagnose=True,
 )
 
+
 # 6. Benchmark Context Manager
 @contextmanager
 def benchmark(name: str = "Operation") -> Generator[None, None, None]:
@@ -247,14 +275,18 @@ def benchmark(name: str = "Operation") -> Generator[None, None, None]:
     finally:
         end_time = time.perf_counter()
         duration = end_time - start_time
-        _logger.bind(duration=duration).opt(depth=2).log("BENCHMARK", f"{name} finished")
+        _logger.bind(duration=duration).opt(depth=2).log(
+            "BENCHMARK", f"{name} finished"
+        )
+
 
 # 7. Memory Profiling Helper
-def memory(message: str = "Memory check"):
+def memory(message: str = "Memory check") -> None:
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     rss_mb = mem_info.rss / (1024 * 1024)
     _logger.bind(memory_mb=rss_mb).opt(depth=1).log("MEMORY", message)
+
 
 # 8. Rich Progress & Log Proxy Manager
 class RemoteProgress:
@@ -262,49 +294,58 @@ class RemoteProgress:
     A proxy for the rich.progress.Progress object that can be used in child processes.
     It sends updates via a multiprocessing Queue to the main process.
     """
-    def __init__(self, queue: multiprocessing.Queue):
+
+    def __init__(self, queue: multiprocessing.Queue[Any]):
         self._queue = queue
 
-    def add_task(self, description: str, total: float = 100.0, **kwargs) -> int:
+    def add_task(self, description: str, total: float = 100.0, **kwargs: Any) -> int:
         # Create a unique ID for this task across processes
         task_id = id(description) + int(time.time() * 1000)
         self._queue.put(("progress", "add", task_id, description, total, kwargs))
         return task_id
 
-    def update(self, task_id: int, advance: float = 0, **kwargs):
+    def update(self, task_id: int, advance: float = 0, **kwargs: Any) -> None:
         self._queue.put(("progress", "update", task_id, advance, kwargs))
 
-    def __enter__(self): return self
-    def __exit__(self, exc_type, exc_val, exc_tb): pass
+    def __enter__(self) -> RemoteProgress:
+        return self
 
-_PROGRESS_QUEUE = None
-_LISTENER_THREAD = None
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        pass
+
+
+_PROGRESS_QUEUE: multiprocessing.Queue[Any] | None = None
+_LISTENER_THREAD: threading.Thread | None = None
 _LISTENER_LOCK = threading.Lock()
-_ACTIVE_PROGRESS = None # Tracks the currently active Rich progress instance
+_ACTIVE_PROGRESS: Progress | None = (
+    None  # Tracks the currently active Rich progress instance
+)
 
-def _main_listener(queue: multiprocessing.Queue):
+
+def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
     """Background thread in the main process that listens for progress AND log updates."""
-    tasks = {}
+    tasks: dict[int, TaskID] = {}
     while True:
         try:
-            # We use a timeout to ensure the thread is periodically wakeable 
+            # We use a timeout to ensure the thread is periodically wakeable
             # and doesn't get stuck if the queue is suddenly closed.
             msg = queue.get(timeout=0.1)
         except (ValueError, EOFError, OSError, TypeError):
             break
-        except Exception: # Empty queue timeout
+        except Exception:  # Empty queue timeout
             continue
-        
-        if msg is None: # Sentinel for shutdown
+
+        if msg is None:  # Sentinel for shutdown
             break
-        
+
         # Always route to the currently active progress instance
         p = _ACTIVE_PROGRESS
         if p is None and msg[0] == "progress":
             continue
+        assert p is not None
 
         category = msg[0]
-        
+
         if category == "progress":
             action = msg[1]
             if action == "add":
@@ -314,30 +355,33 @@ def _main_listener(queue: multiprocessing.Queue):
                 _, _, tid, advance, kwargs = msg
                 if tid in tasks:
                     p.update(tasks[tid], advance=advance, **kwargs)
-        
+
         elif category == "log":
-            # Instead of printing directly, we log it raw. 
+            # Instead of printing directly, we log it raw.
             # This ensures it goes through the main thread's logging synchronization.
             _, formatted_msg = msg
             _logger.opt(raw=True).info(formatted_msg)
 
+
 @contextmanager
 def progress(transient: bool = False) -> Generator[Progress, None, None]:
     """
-    Returns a progress manager context manager. 
+    Returns a progress manager context manager.
     In the Main Process: Manages a real Rich Progress and the listener thread.
     In Child Processes: Returns a RemoteProgress proxy.
     """
     global _PROGRESS_QUEUE, _LISTENER_THREAD, _ACTIVE_PROGRESS
-    
+
     if not RICH_AVAILABLE:
-        raise ImportError("The 'rich' library is required. Install with: pip install rich")
+        raise ImportError(
+            "The 'rich' library is required. Install with: pip install rich"
+        )
 
     # If we are in a child process and have a queue, yield a proxy
     if multiprocessing.current_process().name != "MainProcess" and _PROGRESS_QUEUE:
         yield cast(Progress, RemoteProgress(_PROGRESS_QUEUE))
         return
-        
+
     # In Main Process, create a real Progress
     p = Progress(
         SpinnerColumn(),
@@ -350,48 +394,69 @@ def progress(transient: bool = False) -> Generator[Progress, None, None]:
         console=_rich_console,
         transient=transient,
     )
-    
+
     _ACTIVE_PROGRESS = p
 
     with _LISTENER_LOCK:
         if _PROGRESS_QUEUE is None:
             _PROGRESS_QUEUE = multiprocessing.Queue()
-            
+
         if _LISTENER_THREAD is None or not _LISTENER_THREAD.is_alive():
             _LISTENER_THREAD = threading.Thread(
-                target=_main_listener, 
-                args=(_PROGRESS_QUEUE,),
-                daemon=True
+                target=_main_listener, args=(_PROGRESS_QUEUE,), daemon=True
             )
             _LISTENER_THREAD.start()
-    
+
     try:
         with p:
             yield p
     finally:
         _ACTIVE_PROGRESS = None
 
-def set_progress_queue(queue: multiprocessing.Queue):
+
+def set_progress_queue(queue: multiprocessing.Queue[Any]) -> None:
     """Set the queue used for remote progress updates (call this in child processes)."""
     global _PROGRESS_QUEUE
     _PROGRESS_QUEUE = queue
-    
+
     if multiprocessing.current_process().name == "MainProcess":
         return
-        
+
     _logger.remove()
-    _logger.add(LOG_FILE_PATH, level="TRACE", rotation="00:00", retention="10 days", compression="zip", format=file_formatter, enqueue=True)
-    _logger.add(JSON_LOG_FILE_PATH, level="TRACE", rotation="00:00", retention="10 days", compression="zip", serialize=True, enqueue=True)
-    
-    def proxy_sink(message):
+    _logger.add(
+        LOG_FILE_PATH,
+        level="TRACE",
+        rotation="00:00",
+        retention="10 days",
+        compression="zip",
+        format=file_formatter,
+        enqueue=True,
+    )
+    _logger.add(
+        JSON_LOG_FILE_PATH,
+        level="TRACE",
+        rotation="00:00",
+        retention="10 days",
+        compression="zip",
+        serialize=True,
+        enqueue=True,
+    )
+
+    def proxy_sink(message: Message) -> None:
         try:
             queue.put(("log", message))
         except (ValueError, EOFError, BrokenPipeError):
-            pass 
-        
-    _logger.add(proxy_sink, level=os.getenv("LOGGER_LEVEL", "INFO").upper(), format=file_formatter, colorize=True)
+            pass
 
-def reset_progress_queue():
+    _logger.add(
+        proxy_sink,
+        level=os.getenv("LOGGER_LEVEL", "INFO").upper(),
+        format=file_formatter,
+        colorize=True,
+    )
+
+
+def reset_progress_queue() -> None:
     """Shuts down and clears the global progress queue state."""
     global _PROGRESS_QUEUE, _LISTENER_THREAD, _ACTIVE_PROGRESS
     _ACTIVE_PROGRESS = None
@@ -405,8 +470,13 @@ def reset_progress_queue():
             _PROGRESS_QUEUE = None
         _LISTENER_THREAD = None
 
+
 # 9. Global Exception Hook
-def handle_exception(exc_type, exc_value, exc_traceback):
+def handle_exception(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    exc_traceback: TracebackType | None,
+) -> None:
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
@@ -417,9 +487,9 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     thread_id = threading.get_ident()
 
     tb = exc_traceback
-    while tb.tb_next:
+    while tb is not None and tb.tb_next:
         tb = tb.tb_next
-    function_name = tb.tb_frame.f_code.co_name
+    function_name = tb.tb_frame.f_code.co_name if tb is not None else "<unknown>"
 
     msg = (
         f"An unhandled exception occurred in function '{function_name}', "
@@ -428,17 +498,20 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
     _logger.opt(exception=(exc_type, exc_value, exc_traceback)).critical(msg)
 
+
 # 10. Standard Logging Interceptor
 class InterceptHandler(logging.Handler):
     """
     Intercepts standard logging messages and routes them to Loguru.
     """
-    def emit(self, record: logging.LogRecord):
+
+    def emit(self, record: logging.LogRecord) -> None:
         # Respect silenced modules
         if record.name in _SILENCED_MODULES:
             return
 
         # Get corresponding Loguru level if it exists.
+        level: str | int
         try:
             level = _logger.level(record.levelname).name
         except ValueError:
@@ -451,61 +524,84 @@ class InterceptHandler(logging.Handler):
                 frame = frame.f_back
             depth += 1
 
-        _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        _logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
-def intercept_standard_logging():
+
+def intercept_standard_logging() -> None:
     """
     Routes all standard Python 'logging' calls through Chronos.
     Call this once at the start of your application.
     """
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
 
-def silence(*module_names):
+
+def silence(*module_names: str) -> None:
     """Silences log output from the specified modules (only for intercepted logs)."""
     global _SILENCED_MODULES
     for name in module_names:
         _SILENCED_MODULES.add(name)
 
+
 # 11. Sticky System Metrics
-def enable_system_metrics():
+def enable_system_metrics() -> None:
     """
     Patches the logger to include CPU and Thread count in every log's 'extra' dict.
     Useful for high-density debugging.
     """
-    def metrics_patcher(record):
+
+    def metrics_patcher(record: Record) -> None:
         record["extra"]["cpu_pct"] = psutil.cpu_percent()
         record["extra"]["thread_cnt"] = threading.active_count()
-    
+
     # Register the patcher if not already present
     if not any(p.__name__ == "metrics_patcher" for p in _PATCHERS):
         _PATCHERS.append(metrics_patcher)
 
-def summary(title: str = "Execution Summary", success_count: int | None = None, failure_count: int | None = None):
+
+def summary(
+    title: str = "Execution Summary",
+    success_count: int | None = None,
+    failure_count: int | None = None,
+) -> None:
     """
-    Displays a beautiful Rich panel with execution statistics, 
+    Displays a beautiful Rich panel with execution statistics,
     log counts, and system performance.
     """
     if not RICH_AVAILABLE:
         print(f"--- {title} ---")
-        print(f"Total Runtime: {time.perf_counter() - float(os.environ['CHRONOS_START_TIME']):.2f}s")
+        print(
+            f"Total Runtime: {time.perf_counter() - float(os.environ['CHRONOS_START_TIME']):.2f}s"
+        )
         return
+
+    assert _rich_console is not None
 
     # 1. Time Stats
     runtime = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
-    
+
     # 2. Log Stats Table
     log_table = Table(box=None, padding=(0, 2))
     log_table.add_column("Level", style="bold")
     log_table.add_column("Count", justify="right")
-    
+
     # Track if we have any stats to show
     has_stats = False
     for level, count in _LOG_COUNTS.items():
         if count > 0:
             has_stats = True
-            color = next((l["color"].strip("<>") for l in LOG_LEVELS if l["name"] == level), "white")
+            color = next(
+                (
+                    entry["color"].strip("<>")
+                    for entry in LOG_LEVELS
+                    if entry["name"] == level
+                ),
+                "white",
+            )
             # Special handling for EXCEPTION which isn't in LOG_LEVELS
-            if level == "EXCEPTION": color = "red"
+            if level == "EXCEPTION":
+                color = "red"
             log_table.add_row(f"[{color}]{level}[/]", str(count))
 
     # 3. Success/Failure Stats (if provided)
@@ -525,7 +621,7 @@ def summary(title: str = "Execution Summary", success_count: int | None = None, 
     sys_info = f"[dim]Final Memory: {mem:.2f} MB | Runtime: {runtime:.2f}s[/]"
 
     # Construct the content
-    content = []
+    content: list[Any] = []
     if has_stats:
         content.append(log_table)
         if results_table:
@@ -540,16 +636,18 @@ def summary(title: str = "Execution Summary", success_count: int | None = None, 
             title=f"[bold cyan]{title}[/]",
             subtitle=sys_info,
             expand=False,
-            padding=(1, 2)
+            padding=(1, 2),
         )
     )
 
-def get_progress_queue():
+
+def get_progress_queue() -> multiprocessing.Queue[Any]:
     """Returns the current progress queue to be passed to child processes."""
     global _PROGRESS_QUEUE
     if _PROGRESS_QUEUE is None:
         _PROGRESS_QUEUE = multiprocessing.Queue()
     return _PROGRESS_QUEUE
+
 
 sys.excepthook = handle_exception
 
