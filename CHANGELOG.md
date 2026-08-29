@@ -2,6 +2,10 @@
 
 Reverse-chronological log of logical change batches.
 
+## [v0.8.0] — 2026-08-29
+
+Release tag for the batches below (2026-08-28 → 2026-08-29): streaming map API in `parallel`, compact clickable console format with 7-day retention, TTY-aware colorization, and the child progress proxy / interceptor / console sink hardening. Version bump 0.7.9 → 0.8.0 (new public API: `parallel` streaming map).
+
 ## [2026-08-29] — Code audit: child progress proxy, interceptor, console sink
 
 ### Fixed
