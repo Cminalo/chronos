@@ -2,6 +2,22 @@
 
 Reverse-chronological log of logical change batches.
 
+## [2026-08-28] — Log output overhaul + retention policy
+
+### Changed
+- Console format redesigned for scannability and IDE click-through: compact single-line records (`HH:mm:ss.SSS | LEVEL | message  path:line`), message-first layout, dim clickable `path:line` suffix (cwd-relative, absolute fallback), full date / process-thread ids / quotes moved to file logs.
+- File text format: location now renders as clickable `path:line in function()` instead of `module -> function -> line`; process/thread shown as readable names (`[P:MainProcess|T:MainThread]`); benchmark duration renders as `finished in X.XXXs` (dropped the near-useless "Global:" uptime).
+- Retention policy enforced across all file sinks (text, JSONL, failures, and child-process sinks): daily rotation at midnight, 7-day maximum retention (was 10 days), centralized in `_add_file_sink`.
+- `diagnose` (live variable interpolation in tracebacks — secret-leak risk) now defaults to False everywhere and is opt-in via `CHRONOS_DIAGNOSE=True`; console tracebacks use the clean standard form (`backtrace=False`).
+
+### Fixed
+- Child-process logs were written twice to the text/JSONL files (child's own sinks + raw re-log by the main-process listener); proxied messages are now console-only via a `proxied` record flag.
+- Proxied child messages leaked ANSI escape codes into text log files (`proxy_sink` hardcoded `colorize=True`); the proxy now formats with the console formatter and only console sinks receive it.
+- Locations are escaped for loguru's colorizer, so pseudo-paths like `<stdin>` no longer crash formatting.
+
+### Tests
+- `test_benchmark_context` asserts the new `finished in X.XXXs` duration format.
+
 ## [2026-08-28] — Streaming parallel map + logger fixes
 
 ### Added

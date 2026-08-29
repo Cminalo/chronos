@@ -27,7 +27,7 @@ Chronos is designed to provide professional-grade observability and concurrency 
 ### 📊 Professional Observability
 - **Dual Routing**: Console (filtered) + Text File (all) + JSONL (serialized) + Failures (targeted).
 - **Execution Summaries**: Generate beautiful end-of-run reports with `logger.summary()`.
-- **Automated Maintenance**: Daily rotation, zipping, and 10-day retention for all log files.
+- **Automated Maintenance**: Daily rotation, zipping, and 7-day retention for all log files.
 
 ---
 
@@ -173,6 +173,10 @@ RICH_CONSOLE=True
 
 # Log directory (Default: ./logs relative to the working directory)
 CHRONOS_LOG_DIR=logs
+
+# Interpolate live variable values into traceback logs — development only,
+# values may include secrets (Default: False)
+CHRONOS_DIAGNOSE=False
 ```
 
 ---

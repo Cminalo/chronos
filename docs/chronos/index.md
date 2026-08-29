@@ -59,6 +59,9 @@ Environment variables (via `.env`):
 |---|---|---|
 | `LOGGER_LEVEL` | `INFO` | Console verbosity (TRACE, DEBUG, INFO, SUCCESS, WARNING, ERROR, CRITICAL) |
 | `RICH_CONSOLE` | `True` | Toggle the Rich Terminal UI |
+| `CHRONOS_DIAGNOSE` | `False` | Interpolate live variable values into traceback logs — development only, values may include secrets |
+
+Log files rotate daily at midnight and are retained for 7 days. Console records render as compact single lines with an IDE-clickable `path:line` suffix; file logs keep full timestamps and process/thread context.
 
 ## Development
 

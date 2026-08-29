@@ -151,29 +151,47 @@ _CHRONOS_START_TIME: float = time.perf_counter()
 
 
 # 4. Custom Formatters
+def _location(record: Record) -> str:
+    """IDE-clickable location: cwd-relative path when possible, absolute otherwise."""
+    try:
+        rel = os.path.relpath(record["file"].path)
+    except ValueError:  # e.g. different drive on Windows
+        rel = record["file"].path
+    loc = record["file"].path if rel.startswith("..") else rel
+    # Paths are interpolated into a loguru color-tag format string; escape `<`
+    # so pseudo-paths like `<stdin>` are not parsed as color directives.
+    return loc.replace("<", "\\<")
+
+
+def console_formatter(record: Record) -> str:
+    """Compact single-line console format with a clickable `path:line` suffix."""
+    return (
+        "<green>{time:HH:mm:ss.SSS}</green> | "
+        "<level>{level: <8}</level> | "
+        "{message}  <dim>" + _location(record) + ":{line}</dim>\n{exception}"
+    )
+
+
 def file_formatter(record: Record) -> str:
-    """Format used for text files (standard loguru syntax)"""
+    """Forensic text-file format: full date, process/thread context, quoted message."""
     message_format = "{message}"
     if "duration" in record["extra"]:
-        global_time = time.perf_counter() - _CHRONOS_START_TIME
-        message_format = (
-            "{message} (Duration: {extra[duration]:.4f}s, Global: " + f"{global_time:.4f}s" + ")"
-        )
+        message_format = "{message} in {extra[duration]:.3f}s"
     if "memory_mb" in record["extra"]:
         message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
 
-    ctx_id = f" [ID: {record['extra']['x_id']}]" if "x_id" in record["extra"] else ""
+    ctx = ""
+    if "x_id" in record["extra"]:
+        ctx += f" [ID: {record['extra']['x_id']}]"
     if "cpu_pct" in record["extra"]:
-        ctx_id += f" [CPU: {record['extra']['cpu_pct']}%|Thr: {record['extra']['thread_cnt']}]"
+        ctx += f" [CPU: {record['extra']['cpu_pct']}%|Thr: {record['extra']['thread_cnt']}]"
 
     return (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level: <9}</level> | "
-        "<dim>[P:{process.id}|T:{thread.id}]</dim>" + ctx_id + " | "
+        "<dim>[P:{process.name}|T:{thread.name}]</dim>" + ctx + " | "
         f'"{message_format}" | '
-        "<cyan>{name}</cyan> -> "
-        "<cyan>{function}</cyan> -> "
-        "<cyan>{line}</cyan>\n{exception}"
+        "<cyan>" + _location(record) + ":{line}</cyan> in <cyan>{function}</cyan>()\n{exception}"
     )
 
 
@@ -182,6 +200,34 @@ _logger.remove()
 
 console_level = os.getenv("LOGGER_LEVEL", "INFO").upper()
 use_rich = os.getenv("RICH_CONSOLE", "True").lower() in ("true", "1", "yes")
+# diagnose=True interpolates live variable values into tracebacks (secret-leak
+# risk in persistent logs); opt in for local development via CHRONOS_DIAGNOSE.
+diagnose = os.getenv("CHRONOS_DIAGNOSE", "False").lower() in ("true", "1", "yes")
+
+# Retention policy: daily rotation, 7-day maximum retention.
+ROTATION = "00:00"
+RETENTION = "7 days"
+
+
+# Messages proxied from child processes are pre-formatted console lines; the
+# child already writes them to the shared file sinks, so files must skip them.
+def _not_proxied(record: Record) -> bool:
+    return not record["extra"].get("proxied", False)
+
+
+def _add_file_sink(path: Path, **kwargs: Any) -> None:
+    """Add a daily-rotated, 7-day-retained, compressed file sink."""
+    _logger.add(
+        path,
+        rotation=ROTATION,
+        retention=RETENTION,
+        compression="zip",
+        enqueue=True,
+        backtrace=True,
+        diagnose=diagnose,
+        **kwargs,
+    )
+
 
 # Optional Global Rich Console (used so logger and progress share the same buffer)
 # We must explicitly set file=sys.stderr so it perfectly synchronizes with Loguru's output stream.
@@ -200,64 +246,39 @@ if RICH_AVAILABLE and use_rich:
     _logger.add(
         rich_console_sink,
         level=console_level,
-        format=file_formatter,
+        format=console_formatter,
         colorize=True,
         # Must be False to prevent background thread terminal
         # tearing with Progress bars
         enqueue=False,
-        backtrace=True,
-        diagnose=True,
+        backtrace=False,
+        diagnose=False,
     )
 else:
     # Standard Console Sink
     _logger.add(
         sys.stderr,
         level=console_level,
-        format=file_formatter,
+        format=console_formatter,
         enqueue=True,
         colorize=True,
-        backtrace=True,
-        diagnose=True,
+        backtrace=False,
+        diagnose=False,
     )
 
-# File sinks remain unchanged (text & jsonl)
-_logger.add(
-    LOG_FILE_PATH,
-    level="TRACE",
-    rotation="00:00",
-    retention="10 days",
-    compression="zip",
-    format=file_formatter,
-    enqueue=True,
-    backtrace=True,
-    diagnose=True,
-)
+# Sink 2: Text Log (logs/chronos_DATE.log)
+_add_file_sink(LOG_FILE_PATH, level="TRACE", format=file_formatter, filter=_not_proxied)
 
-_logger.add(
-    JSON_LOG_FILE_PATH,
-    level="TRACE",
-    rotation="00:00",
-    retention="10 days",
-    compression="zip",
-    serialize=True,
-    enqueue=True,
-    backtrace=True,
-    diagnose=True,
-)
+# Sink 3: JSON Log (logs/chronos_DATE.jsonl)
+_add_file_sink(JSON_LOG_FILE_PATH, level="TRACE", serialize=True, filter=_not_proxied)
 
 # Sink 4: Failures Log (logs/failures_DATE.log)
 # Only captures logs explicitly marked as failures (e.g. from parallel.execute)
-_logger.add(
+_add_file_sink(
     FAILURES_LOG_FILE_PATH,
     level="ERROR",
-    filter=lambda record: record["extra"].get("is_failure", False),
-    rotation="00:00",
-    retention="10 days",
-    compression="zip",
+    filter=lambda record: record["extra"].get("is_failure", False) and _not_proxied(record),
     format=file_formatter,
-    enqueue=True,
-    backtrace=True,
-    diagnose=True,
 )
 
 
@@ -349,8 +370,10 @@ def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
             # This ensures it goes through the main thread's logging synchronization.
             # NOTE: This must work even when no progress bar is active, otherwise
             # this listener thread would die and all later child logs would be lost.
+            # The `proxied` flag routes these to console sinks only — the child
+            # process already wrote them to the shared file sinks.
             _, formatted_msg = msg
-            _logger.opt(raw=True).info(formatted_msg)
+            _logger.bind(proxied=True).opt(raw=True).info(formatted_msg)
 
 
 @contextmanager
@@ -411,23 +434,13 @@ def set_progress_queue(queue: multiprocessing.Queue[Any]) -> None:
         return
 
     _logger.remove()
-    _logger.add(
-        LOG_FILE_PATH,
-        level="TRACE",
-        rotation="00:00",
-        retention="10 days",
-        compression="zip",
+    _add_file_sink(LOG_FILE_PATH, level="TRACE", format=file_formatter)
+    _add_file_sink(JSON_LOG_FILE_PATH, level="TRACE", serialize=True)
+    _add_file_sink(
+        FAILURES_LOG_FILE_PATH,
+        level="ERROR",
+        filter=lambda record: record["extra"].get("is_failure", False),
         format=file_formatter,
-        enqueue=True,
-    )
-    _logger.add(
-        JSON_LOG_FILE_PATH,
-        level="TRACE",
-        rotation="00:00",
-        retention="10 days",
-        compression="zip",
-        serialize=True,
-        enqueue=True,
     )
 
     def proxy_sink(message: Message) -> None:
@@ -437,7 +450,7 @@ def set_progress_queue(queue: multiprocessing.Queue[Any]) -> None:
     _logger.add(
         proxy_sink,
         level=os.getenv("LOGGER_LEVEL", "INFO").upper(),
-        format=file_formatter,
+        format=console_formatter,
         colorize=True,
     )
 

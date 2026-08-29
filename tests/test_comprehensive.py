@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 
 import pytest
@@ -95,8 +96,7 @@ def test_benchmark_context(setup_logger):
     assert _LOG_COUNTS["BENCHMARK"] == 1
     content = setup_logger["log"].read_text()
     assert "speed test finished" in content
-    assert "Duration:" in content
-    assert "Global:" in content
+    assert re.search(r"finished in \d+\.\d+s", content) is not None
 
 
 @pytest.mark.component
