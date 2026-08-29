@@ -9,7 +9,7 @@
 - System-tier tests (end-to-end CLI-style workflow): planned
 
 ## Recent commits
-- 2026-08-29: logging robustness hardening (TTY-aware colorization, listener/config fallbacks, 17 robustness tests)
+- 2026-08-29: code audit fixes (RemoteProgress update/advance + collision-free IDs, interceptor never crashes caller, piped console no-wrap, summary markup, counts lock; 5 regression tests)
 - 2026-08-28: log output overhaul (compact clickable console format, 7-day retention, proxied-log dedup + ANSI fix, CHRONOS_DIAGNOSE gate)
 - 2026-08-16: refactor(logger): add type annotations and clean up formatting
 - 2026-07-11: chore: align project with init-py-project conventions

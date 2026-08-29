@@ -309,3 +309,110 @@ def test_import_configures_exactly_the_documented_sinks():
     # 1 console (Rich CallableSink) + text/JSONL/failures FileSinks; the
     # default StreamSink must be gone.
     assert kinds == ["CallableSink", "FileSink", "FileSink", "FileSink"]
+
+
+# --- Audit regressions: RemoteProgress proxy, interceptor, console sink -------
+
+
+@pytest.mark.unit
+def test_remote_progress_task_ids_are_collision_free():
+    """id(description) repeated for interned literals; same-ms calls collided,
+    cross-wiring updates between bars in the main-process listener."""
+    from chronos.logger import RemoteProgress
+
+    rp = RemoteProgress(pyqueue.Queue())
+    ids = {rp.add_task("same description") for _ in range(5)}
+    assert len(ids) == 5
+
+
+@pytest.mark.unit
+def test_loguru_color_tags_convert_to_valid_rich_styles():
+    """summary() interpolates level colors into Rich markup; '<red><bold>'
+    previously became the invalid tag 'red><bold' (bold silently lost)."""
+    from rich.style import Style
+
+    from chronos.logger import LOG_LEVELS
+
+    for entry in LOG_LEVELS:
+        style = entry["color"].replace("><", " ").strip("<>")
+        Style.parse(style)  # raises StyleSyntaxError on invalid markup
+
+
+@pytest.mark.component
+def test_remote_progress_update_and_advance_roundtrip(setup_logger, monkeypatch):
+    """The listener understands 'update' messages; the proxy must be able to
+    send them (child p.update()/p.advance() used to raise AttributeError)."""
+    cl = importlib.import_module("chronos.logger")  # bypass package-attr shadowing
+    from chronos.logger import RemoteProgress, _main_listener
+
+    class StubProgress:
+        def __init__(self):
+            self.next_id = 0
+            self.added: list[tuple[str, float, dict]] = []
+            self.updates: list[tuple[int, object, dict]] = []
+
+        def add_task(self, description, total=100.0, **kwargs):
+            self.next_id += 1
+            self.added.append((description, total, kwargs))
+            return self.next_id
+
+        def update(self, task_id, advance=0, **kwargs):
+            self.updates.append((task_id, advance, kwargs))
+
+    stub = StubProgress()
+    monkeypatch.setattr(cl, "_ACTIVE_PROGRESS", stub)
+
+    q: pyqueue.Queue = pyqueue.Queue()
+    rp = RemoteProgress(q)
+    tid_a = rp.add_task("job a", total=5)
+    tid_b = rp.add_task("job b", total=5)
+    rp.update(tid_a, advance=2)
+    rp.advance(tid_b)
+    q.put(None)  # shutdown sentinel
+    _main_listener(q)
+
+    assert [desc for desc, _, _ in stub.added] == ["job a", "job b"]
+    # Stub assigns rich task ids 1 and 2 in add order; updates must route to
+    # the matching rich task with the right advance value.
+    assert stub.updates == [
+        (1, 2, {}),  # tid_a -> "job a" bar, advance=2
+        (2, 1, {}),  # tid_b -> "job b" bar, advance=1
+    ]
+
+
+@pytest.mark.component
+def test_intercept_malformed_format_args_does_not_raise(setup_logger, capsys):
+    """A stdlib log call with mismatched format args (TypeError in
+    getMessage) must degrade gracefully, never crash the calling code."""
+    lg = logging.getLogger("chronos_audit_malformed")
+    lg.setLevel(1)  # NOTSET(0) would inherit root's WARNING and skip INFO
+    lg.propagate = False
+    handler = InterceptHandler()
+    lg.addHandler(handler)
+    try:
+        lg.info("%d %s", "not-a-number")  # must not raise
+    finally:
+        lg.removeHandler(handler)
+
+    stderr = capsys.readouterr().err
+    assert "Logging error" in stderr  # stdlib handleError diagnostic ran
+
+
+@pytest.mark.component
+def test_piped_console_sink_does_not_wrap_lines(setup_logger, monkeypatch):
+    """Rich wraps piped output at 80 columns, splitting one log record into
+    several physical lines; redirected output must stay one line per record."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    cl = importlib.import_module("chronos.logger")
+    buf = StringIO()
+    monkeypatch.setattr(cl, "_rich_console", Console(file=buf, width=80))
+
+    message = "X" * 150 + "\n"
+    cl.rich_console_sink(message)
+
+    out = buf.getvalue()
+    assert out.count("\n") == 1
+    assert "X" * 150 in out

@@ -23,7 +23,9 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
+from itertools import count
 from pathlib import Path
+from queue import Empty
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -145,15 +147,18 @@ _LOG_COUNTS["EXCEPTION"] = 0  # Track logger.exception calls
 
 _PATCHERS: list[Callable[[Record], None]] = []
 
+_LOG_COUNTS_LOCK = threading.Lock()
+
 
 def _master_patcher(record: Record) -> None:
     """Executes all registered patchers exactly once per record."""
-    # Internal: Track stats
-    level_name = record["level"].name
-    if level_name in _LOG_COUNTS:
-        _LOG_COUNTS[level_name] += 1
-    if record["exception"]:
-        _LOG_COUNTS["EXCEPTION"] += 1
+    # Internal: Track stats (lock guards += against concurrent logging threads)
+    with _LOG_COUNTS_LOCK:
+        level_name = record["level"].name
+        if level_name in _LOG_COUNTS:
+            _LOG_COUNTS[level_name] += 1
+        if record["exception"]:
+            _LOG_COUNTS["EXCEPTION"] += 1
 
     # User registered patchers
     for patch_func in _PATCHERS:
@@ -278,7 +283,7 @@ def rich_console_sink(message: Message) -> None:
     # Rich passes embedded ANSI through even to non-TTY streams; strip it when
     # piped so redirected output stays clean.
     text = message if _console_is_tty() else _ANSI_SGR_RE.sub("", message)
-    _rich_console.print(text, end="", markup=False, highlight=False)
+    _rich_console.print(text, end="", markup=False, highlight=False, soft_wrap=True)
 
 
 if RICH_AVAILABLE and use_rich:
@@ -353,21 +358,34 @@ _LISTENER_THREAD: threading.Thread | None = None
 _LISTENER_LOCK = threading.Lock()
 _ACTIVE_PROGRESS: Progress | None = None  # Tracks the currently active Rich progress instance
 
+_REMOTE_TASK_SEQ = count()  # Collision-free IDs for RemoteProgress tasks (per child process)
+
 
 class RemoteProgress:
     """
     A proxy for the rich.progress.Progress object that can be used in child processes.
     It sends updates via a multiprocessing Queue to the main process.
+
+    Only the operations the main-process listener understands are proxied:
+    ``add_task``, ``update`` and ``advance``.
     """
 
     def __init__(self, queue: multiprocessing.Queue[Any]):
         self._queue = queue
 
     def add_task(self, description: str, total: float = 100.0, **kwargs: Any) -> int:
-        # Create a unique ID for this task across processes
-        task_id = id(description) + int(time.time() * 1000)
+        # PID + process-lifetime sequence: unique across processes and across
+        # same-millisecond calls (id(description) can repeat for interned or
+        # recycled string objects).
+        task_id = os.getpid() * 10_000_000 + next(_REMOTE_TASK_SEQ)
         self._queue.put(("progress", "add", task_id, description, total, kwargs))
         return task_id
+
+    def update(self, task_id: int, advance: float | None = None, **kwargs: Any) -> None:
+        self._queue.put(("progress", "update", task_id, advance, kwargs))
+
+    def advance(self, task_id: int, advance: float = 1) -> None:
+        self.update(task_id, advance=advance)
 
 
 def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
@@ -378,10 +396,10 @@ def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
             # We use a timeout to ensure the thread is periodically wakeable
             # and doesn't get stuck if the queue is suddenly closed.
             msg = queue.get(timeout=0.1)
+        except Empty:
+            continue  # Poll timeout; keep waiting
         except (ValueError, EOFError, OSError, TypeError):
             break
-        except Exception:  # Empty queue timeout
-            continue
 
         if msg is None:  # Sentinel for shutdown
             break
@@ -549,25 +567,32 @@ class InterceptHandler(logging.Handler):
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        # Respect silenced modules
-        if record.name in _SILENCED_MODULES:
-            return
-
-        # Get corresponding Loguru level if it exists.
-        level: str | int
         try:
-            level = _logger.level(record.levelname).name
-        except ValueError:
-            level = record.levelno
+            # Respect silenced modules
+            if record.name in _SILENCED_MODULES:
+                return
 
-        # Find caller from where originated the logged message
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
-            if frame.f_back:
-                frame = frame.f_back
-            depth += 1
+            # Get corresponding Loguru level if it exists.
+            level: str | int
+            try:
+                level = _logger.level(record.levelname).name
+            except ValueError:
+                level = record.levelno
 
-        _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+            # Find caller from where originated the logged message
+            frame, depth = logging.currentframe(), 2
+            while frame and frame.f_code.co_filename == logging.__file__:
+                if frame.f_back:
+                    frame = frame.f_back
+                depth += 1
+
+            _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        except Exception:
+            # A malformed stdlib record (e.g. mismatched format args raising
+            # TypeError in getMessage) must never crash caller code — the same
+            # graceful-degradation contract stdlib handlers follow. handleError
+            # reports to stderr and never raises.
+            self.handleError(record)
 
 
 def intercept_standard_logging() -> None:
@@ -630,17 +655,22 @@ def summary(
 
     # Track if we have any stats to show
     has_stats = False
-    for level, count in _LOG_COUNTS.items():
-        if count > 0:
+    for level, n in _LOG_COUNTS.items():
+        if n > 0:
             has_stats = True
+            # Convert loguru color tags ('<red><bold>') to a Rich style ('red bold')
             color = next(
-                (entry["color"].strip("<>") for entry in LOG_LEVELS if entry["name"] == level),
+                (
+                    entry["color"].replace("><", " ").strip("<>")
+                    for entry in LOG_LEVELS
+                    if entry["name"] == level
+                ),
                 "white",
             )
             # Special handling for EXCEPTION which isn't in LOG_LEVELS
             if level == "EXCEPTION":
                 color = "red"
-            log_table.add_row(f"[{color}]{level}[/]", str(count))
+            log_table.add_row(f"[{color}]{level}[/]", str(n))
 
     # 3. Success/Failure Stats (if provided)
     results_table = None

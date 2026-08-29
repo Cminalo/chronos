@@ -2,6 +2,20 @@
 
 Reverse-chronological log of logical change batches.
 
+## [2026-08-29] — Code audit: child progress proxy, interceptor, console sink
+
+### Fixed
+- `RemoteProgress` (child-process progress proxy) now implements `update()` and `advance()` — the main-process listener already handled `"update"` messages, but the proxy could never send them, so `p.update(tid, advance=1)` in a child raised `AttributeError`.
+- `RemoteProgress.add_task` IDs no longer collide: `id(description) + ms-timestamp` repeated for interned string literals and recycled objects, cross-wiring updates between bars; IDs are now `pid * 10_000_000 + process-lifetime sequence`.
+- `InterceptHandler.emit` degrades gracefully on malformed stdlib records (e.g. `logging.info("%d", "x")` raising `TypeError` in `getMessage`): the error goes through `Handler.handleError` (stderr diagnostic) instead of propagating into caller code — matching chronos' never-crash-the-caller contract.
+- Piped/redirected console output is no longer hard-wrapped at 80 columns by the Rich sink (one long log record used to split into several physical lines); the sink now prints with `soft_wrap=True`.
+- `summary()` renders valid Rich markup for compound level colors (`<red><bold>` previously became the invalid tag `red><bold`, silently dropping bold).
+- `_main_listener` catches queue poll timeouts via explicit `queue.Empty` instead of a broad `except Exception`.
+- `_LOG_COUNTS` increments are guarded by a lock, so concurrent logging threads can no longer lose counts.
+
+### Tests
+- 5 new regression tests in `tests/test_logger_robustness.py`: collision-free proxy task IDs, proxy update/advance → listener round trip, malformed-stdlib-record graceful degradation, piped-sink no-wrap contract, and loguru→Rich color-tag conversion validity for every level.
+
 ## [2026-08-29] — ANSI-correct colorization + logging robustness hardening
 
 ### Changed
