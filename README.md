@@ -16,6 +16,7 @@ Chronos is designed to provide professional-grade observability and concurrency 
 - **Sticky System Metrics**: Optional patching to attach CPU % and Active Thread count to every log line.
 
 ### ⚡ Parallel Execution
+- **Streaming Map**: `parallel.map(worker, inputs)` runs any iterable — including lazy generators and file iterators — with flat memory use; no job lists, no known total required.
 - **Unified UI**: Logs from worker processes/threads elegantly "leapfrog" over active progress bars without terminal tearing.
 - **Task Recovery**: Automatically tracks and returns the exact inputs that failed during parallel runs.
 - **Dedicated Failure Logs**: Captured errors are automatically saved to `logs/failures_{date}.log` for immediate debugging.
@@ -55,25 +56,67 @@ def my_prep(pool):
     return [(i, pool.apply_async(my_worker, (i,))) for i in inputs]
 
 def main():
-    # Returns successes, failures, and the exact list of failed inputs
-    s, f, failed_inputs = parallel.process_run(
+    # Returns a RunResult; also unpacks as (successes, failures, failed_inputs, results)
+    run = parallel.process_run(
         prep_func=my_prep,
         post_func=lambda r: logger.info(f"Result: {r}"),
         desc="Crunching Numbers",
         total=20
     )
 
-    if failed_inputs:
-        logger.error(f"Failed to process: {failed_inputs}")
+    if run.failed_inputs:
+        logger.error(f"Failed to process: {run.failed_inputs}")
 
     # Generate a professional report
-    logger.summary("Daily Pipeline", success_count=s, failure_count=f)
+    logger.summary("Daily Pipeline", success_count=run.successes, failure_count=run.failures)
 
 if __name__ == "__main__":
     main()
 ```
 
-### 2. Multi-Process Coordination
+### 2. Streaming Parallel Map (files, generators, unknown totals)
+
+`parallel.map` owns the pool plumbing for you. Inputs are never materialized —
+a feeder thread submits tasks lazily from any iterable, so huge files and
+generators run with flat memory use, and an unknown total renders an
+indeterminate progress bar.
+
+```python
+from chronos import logger, parallel
+
+def parse_line(line):
+    return len(line.split())
+
+def main():
+    # Lazy generator over a huge file: no list, no total needed
+    lines = (line for line in open("huge.log", encoding="utf-8"))
+
+    run = parallel.map(
+        parse_line,
+        lines,
+        workers=8,
+        desc="Parsing huge.log",
+        # on_error="collect" (default) records failures and keeps going
+        # unordered=True processes completions out of order
+        # collect=False streams results through post_func without accumulating
+    )
+
+    logger.success(f"Parsed {run.successes} lines, {run.failures} failed")
+    if run.failed_inputs:
+        logger.error(f"First failures: {run.failed_inputs[:5]}")
+
+if __name__ == "__main__":
+    main()
+```
+
+`parallel.starmap(worker, inputs)` works the same way but unpacks each input
+tuple into the worker (`worker(*item)`). `parallel.process_map` /
+`parallel.thread_map` are shorthand for fixing `mode`.
+
+On Ctrl+C the partial `RunResult` is returned with `interrupted=True` instead
+of raising, so checkpointed pipelines keep the completed subset.
+
+### 3. Multi-Process Coordination
 If you are writing custom multiprocessing code, use the coordination queue to keep your terminal clean.
 
 ```python
@@ -96,7 +139,7 @@ if __name__ == "__main__":
     proc.join()
 ```
 
-### 3. Basic Utility Logging
+### 4. Basic Utility Logging
 
 ```python
 from chronos import logger
@@ -127,6 +170,9 @@ LOGGER_LEVEL=INFO
 
 # Toggle the Rich Terminal UI (Default: True)
 RICH_CONSOLE=True
+
+# Log directory (Default: ./logs relative to the working directory)
+CHRONOS_LOG_DIR=logs
 ```
 
 ---
@@ -134,11 +180,15 @@ RICH_CONSOLE=True
 ## Development
 
 ```bash
-# Run the comprehensive test suite
-pixi run pytest tests/test_comprehensive.py
+pixi install         # Install dependencies (use pixi, not plain pip)
 
-# Build the package
-python -m build
+pixi run test        # Full test suite (tier-marked: unit/component/system)
+pixi run test-quick  # Unit + component tests only
+pixi run lint        # ruff check
+pixi run fmt         # ruff format
+pixi run typecheck   # mypy strict mode
+pixi run docs        # Build Sphinx docs
+pixi run build       # Build wheel (python -m build under pixi)
 ```
 
 ## License

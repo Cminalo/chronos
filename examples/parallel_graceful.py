@@ -5,7 +5,8 @@ This file deliberately omits the `if __name__ == "__main__":` block to demonstra
 how Chronos safely intercepts and neutralizes the multiprocessing fork bomb that
 normally crashes macOS and Windows machines.
 
-When run, it will print a loud warning but exit cleanly, returning control to your terminal or debugger.
+When run, it will print a loud warning but exit cleanly, returning
+control to your terminal or debugger.
 """
 
 from chronos import logger, parallel

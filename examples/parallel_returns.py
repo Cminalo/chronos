@@ -9,9 +9,10 @@ This example demonstrates how a worker function can return:
 It also shows how the post_func gracefully unpacks and handles these returns.
 """
 
-from chronos import logger, parallel
-import time
 import random
+import time
+
+from chronos import logger, parallel
 
 
 # --- The Worker Function ---
@@ -68,7 +69,9 @@ def process_results(worker_result):
         # Unpack the multiple datatypes
         task_id, meta_dict, metric_list = worker_result
         logger.info(
-            f"Received complex tuple - ID: {task_id} | Status: {meta_dict['status']} | Avg Metric: {sum(metric_list) / len(metric_list):.2f}"
+            f"Received complex tuple - ID: {task_id} | "
+            f"Status: {meta_dict['status']} | "
+            f"Avg Metric: {sum(metric_list) / len(metric_list):.2f}"
         )
         collected_results.append(meta_dict)
 

@@ -8,10 +8,16 @@ with integrated progress reporting and error handling.
 from __future__ import annotations
 
 import multiprocessing
+import os
 import signal
+import threading
 import time
-from multiprocessing.pool import Pool, ThreadPool
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Literal, TypeVar, cast
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Sized
+from dataclasses import dataclass, field
+from multiprocessing.pool import AsyncResult, Pool, ThreadPool
+from operator import length_hint
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from chronos.logger import logger
 
@@ -66,7 +72,8 @@ def execute(
     total : int
         The total number of tasks expected.
     workers : int | None, optional
-        The number of worker processes or threads to spawn. Defaults to the CPU count or pool default.
+        The number of worker processes or threads to spawn. Defaults to
+        the CPU count or pool default.
 
     Returns
     -------
@@ -85,9 +92,12 @@ def execute(
     # loop if the entry point logic is accidentally triggered in a child process.
     if mode == "process" and multiprocessing.current_process().name != "MainProcess":
         logger.warning(
-            f"⚠️  parallel.process_run('{desc}') was called outside an 'if __name__ == \"__main__\":' block.\n"
-            "Chronos gracefully intercepted this to prevent a multiprocessing fork bomb.\n"
-            "Please wrap your top-level execution code in the main block to ensure correct behavior."
+            f"⚠️  parallel.process_run('{desc}') was called outside an "
+            "'if __name__ == \"__main__\":' block.\n"
+            "Chronos gracefully intercepted this to prevent a "
+            "multiprocessing fork bomb.\n"
+            "Please wrap your top-level execution code in the main block "
+            "to ensure correct behavior."
         )
         return 0, 0, [], []
 
@@ -249,3 +259,301 @@ def thread_run(
         (success_count, failure_count, failed_inputs, results).
     """
     return execute("thread", prep_func, post_func, desc, total, workers)
+
+
+# --- High-level streaming API (parallel.map / parallel.starmap) ---
+
+
+@dataclass
+class RunResult:
+    """
+    Outcome of a parallel.map / parallel.starmap run.
+
+    Supports legacy tuple unpacking:
+    ``successes, failures, failed_inputs, results = run``.
+    """
+
+    successes: int = 0
+    failures: int = 0
+    failed_inputs: list[Any] = field(default_factory=list)
+    results: list[Any] = field(default_factory=list)
+    duration: float = 0.0
+    interrupted: bool = False
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter((self.successes, self.failures, self.failed_inputs, self.results))
+
+
+def _run_stream(
+    worker: Callable[..., Any],
+    inputs: Iterable[Any],
+    *,
+    mode: Literal["process", "thread"],
+    desc: str | None,
+    total: int | None,
+    workers: int | None,
+    on_error: Literal["collect", "raise"],
+    unordered: bool,
+    collect: bool,
+    post_func: Callable[[Any], Any] | None,
+    starmap_mode: bool,
+    maxtasksperchild: int | None,
+) -> RunResult:
+    # Spawn-safety: identical guard to execute()
+    if mode == "process" and multiprocessing.current_process().name != "MainProcess":
+        logger.warning(
+            f"⚠️  parallel.map('{desc or getattr(worker, '__name__', 'map')}') was called "
+            "outside an 'if __name__ == \"__main__\":' block.\n"
+            "Chronos gracefully intercepted this to prevent a multiprocessing fork bomb."
+        )
+        return RunResult()
+
+    n_workers = workers if workers is not None else (os.cpu_count() or 1)
+
+    if total is None:
+        if isinstance(inputs, Sized):
+            total = len(inputs)
+        else:
+            hint = length_hint(inputs)
+            total = hint if hint > 0 else None
+
+    desc_name = desc or getattr(worker, "__name__", "parallel.map")
+    queue = logger.get_progress_queue()
+
+    pool: Pool | ThreadPool
+    if mode == "process":
+        pool = Pool(
+            processes=n_workers,
+            initializer=_worker_init,
+            initargs=(queue,),
+            maxtasksperchild=maxtasksperchild,
+        )
+    else:
+        pool = ThreadPool(processes=n_workers, initializer=_worker_init, initargs=(queue,))
+
+    # Bounded submission window keeps memory flat for unbounded input iterables.
+    window = max(4 * n_workers, 8)
+    slots = threading.Semaphore(window)
+    stop_event = threading.Event()
+    feed_done = threading.Event()
+    feed_error: list[Exception] = []
+    in_flight: OrderedDict[AsyncResult[Any], Any] = OrderedDict()
+    if_lock = threading.Lock()
+    result = RunResult()
+
+    def feeder() -> None:
+        """Consume `inputs` lazily, keeping at most `window` tasks in flight."""
+        try:
+            for item in inputs:
+                acquired = False
+                while not stop_event.is_set():
+                    if slots.acquire(timeout=0.1):
+                        acquired = True
+                        break
+                if not acquired:
+                    return  # Interrupted; stop feeding
+                ar = pool.apply_async(worker, item if starmap_mode else (item,))
+                with if_lock:
+                    in_flight[ar] = item
+        except Exception as exc:  # Surface input-generator failures to the caller
+            feed_error.append(exc)
+        finally:
+            feed_done.set()
+
+    start = time.perf_counter()
+    interrupted = False
+
+    try:
+        with logger.progress(transient=False) as p:
+            main_task = p.add_task(f"[green]{desc_name}", total=total)
+
+            def handle(ar: AsyncResult[Any], item: Any) -> None:
+                """Collect one completed task: count, log failures, advance progress."""
+                try:
+                    data = ar.get()
+                    if post_func is not None:
+                        data = post_func(data)
+                except KeyboardInterrupt:
+                    raise
+                except Exception:
+                    result.failures += 1
+                    logger.bind(is_failure=True).opt(exception=True).error(
+                        f"Task failed during '{desc_name}' (Input: {item!r})"
+                    )
+                    result.failed_inputs.append(item)
+                    if on_error == "raise":
+                        raise
+                else:
+                    result.successes += 1
+                    if collect:
+                        result.results.append(data)
+                finally:
+                    with if_lock:
+                        in_flight.pop(ar, None)
+                    slots.release()
+                    p.update(main_task, advance=1)
+
+            threading.Thread(target=feeder, daemon=True, name="chronos-feeder").start()
+
+            while in_flight or not feed_done.is_set():
+                if not in_flight:
+                    time.sleep(0.01)  # Feeder still working (slow/blocking input)
+                    continue
+
+                if unordered:
+                    with if_lock:
+                        ready = [(ar, itm) for ar, itm in in_flight.items() if ar.ready()]
+                    if not ready:
+                        time.sleep(0.01)
+                        continue
+                    for ar, itm in ready:
+                        handle(ar, itm)
+                else:
+                    # Strict input order: only the oldest in-flight task is
+                    # eligible. Poll ready() (never raises); handle() does the
+                    # get() so worker exceptions are routed through failure
+                    # logging instead of escaping the collection loop.
+                    with if_lock:
+                        ar, itm = next(iter(in_flight.items()))
+                    if not ar.ready():
+                        time.sleep(0.01)
+                        continue
+                    handle(ar, itm)
+
+            if feed_error:
+                raise feed_error[0]
+
+    except KeyboardInterrupt:
+        interrupted = True
+        logger.warning(f"\nExecution interrupted by user. Cleaning up {mode}s...")
+        pool.terminate()
+    except Exception:
+        pool.terminate()
+        raise
+    else:
+        pool.close()
+    finally:
+        stop_event.set()  # Unblock the feeder if it is waiting for a slot
+        if not interrupted:
+            time.sleep(0.01)  # Let workers flush final logs (see execute())
+        pool.join()
+        result.duration = time.perf_counter() - start
+        result.interrupted = interrupted
+
+    return result
+
+
+def map(
+    worker: Callable[[Any], Any],
+    inputs: Iterable[Any],
+    *,
+    mode: Literal["process", "thread"] = "process",
+    desc: str | None = None,
+    total: int | None = None,
+    workers: int | None = None,
+    on_error: Literal["collect", "raise"] = "collect",
+    unordered: bool = False,
+    collect: bool = True,
+    post_func: Callable[[Any], Any] | None = None,
+    maxtasksperchild: int | None = None,
+) -> RunResult:
+    """
+    Execute `worker` over `inputs` in parallel with lazy, streaming submission.
+
+    Unlike :func:`execute`, inputs are never materialized: a feeder thread
+    consumes `inputs` lazily and keeps a bounded window of tasks in flight, so
+    unbounded sources (generators, file iterators) run with flat memory use.
+
+    Parameters
+    ----------
+    worker : Callable[[Any], Any]
+        Task function taking one input item. Must be picklable in process mode.
+    inputs : Iterable[Any]
+        Any iterable of input items (list, generator, file object, ...).
+    mode : {"process", "thread"}
+        Execution strategy. Default "process".
+    desc : str | None, optional
+        Progress bar label. Defaults to `worker.__name__`.
+    total : int | None, optional
+        Expected task count for the progress bar. Auto-detected via len()
+        when inputs is Sized; None renders an indeterminate bar.
+    workers : int | None, optional
+        Worker count. Defaults to CPU count.
+    on_error : {"collect", "raise"}, optional
+        "collect" (default) records failures and continues; "raise" propagates
+        the first worker exception after logging it.
+    unordered : bool, optional
+        Process completions out of submission order (keeps progress live when
+        early tasks are slow). Default False (results in input order).
+    collect : bool, optional
+        Accumulate results in RunResult.results. Set False to stream results
+        through `post_func` without accumulating.
+    post_func : Callable[[Any], Any] | None, optional
+        Per-result transform; its exceptions count as task failures.
+    maxtasksperchild : int | None, optional
+        Process mode only: recycle worker processes after N tasks.
+
+    Returns
+    -------
+    RunResult
+        successes, failures, failed_inputs, results, duration, interrupted.
+        On Ctrl+C the partial result is returned with interrupted=True.
+    """
+    return _run_stream(
+        worker,
+        inputs,
+        mode=mode,
+        desc=desc,
+        total=total,
+        workers=workers,
+        on_error=on_error,
+        unordered=unordered,
+        collect=collect,
+        post_func=post_func,
+        starmap_mode=False,
+        maxtasksperchild=maxtasksperchild,
+    )
+
+
+def starmap(
+    worker: Callable[..., Any],
+    inputs: Iterable[tuple[Any, ...]],
+    *,
+    mode: Literal["process", "thread"] = "process",
+    desc: str | None = None,
+    total: int | None = None,
+    workers: int | None = None,
+    on_error: Literal["collect", "raise"] = "collect",
+    unordered: bool = False,
+    collect: bool = True,
+    post_func: Callable[[Any], Any] | None = None,
+    maxtasksperchild: int | None = None,
+) -> RunResult:
+    """
+    Like :func:`map`, but each input item is a tuple of arguments unpacked
+    into `worker` (i.e. ``worker(*item)``).
+    """
+    return _run_stream(
+        worker,
+        inputs,
+        mode=mode,
+        desc=desc,
+        total=total,
+        workers=workers,
+        on_error=on_error,
+        unordered=unordered,
+        collect=collect,
+        post_func=post_func,
+        starmap_mode=True,
+        maxtasksperchild=maxtasksperchild,
+    )
+
+
+def process_map(worker: Callable[[Any], Any], inputs: Iterable[Any], **kwargs: Any) -> RunResult:
+    """parallel.map with mode="process"."""
+    return map(worker, inputs, mode="process", **kwargs)
+
+
+def thread_map(worker: Callable[[Any], Any], inputs: Iterable[Any], **kwargs: Any) -> RunResult:
+    """parallel.map with mode="thread"."""
+    return map(worker, inputs, mode="thread", **kwargs)

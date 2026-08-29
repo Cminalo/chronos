@@ -1,6 +1,8 @@
-import time
 import logging
+import time
+
 import pytest
+
 from chronos import logger, parallel
 from chronos.logger import _LOG_COUNTS, _PATCHERS, file_formatter
 
@@ -27,9 +29,7 @@ def setup_logger(tmp_path):
     # 3. Re-add sinks using the internal file_formatter
     # We use enqueue=False for tests to ensure synchronous writes for immediate assertion
     logger.add(test_log, level="TRACE", format=file_formatter, enqueue=False)
-    logger.add(
-        test_json, level="TRACE", format=file_formatter, serialize=True, enqueue=False
-    )
+    logger.add(test_json, level="TRACE", format=file_formatter, serialize=True, enqueue=False)
     logger.add(
         test_fail,
         level="ERROR",
@@ -54,6 +54,7 @@ def setup_logger(tmp_path):
 # --- Logger Core Tests ---
 
 
+@pytest.mark.component
 def test_logger_levels(setup_logger):
     """Verify all custom and standard levels work and are counted."""
     logger.trace("trace msg")
@@ -74,6 +75,7 @@ def test_logger_levels(setup_logger):
     assert _LOG_COUNTS["CRITICAL"] == 1
 
 
+@pytest.mark.component
 def test_memory_logging(setup_logger):
     """Verify memory logging doesn't crash and captures RSS."""
     logger.memory("Check RAM")
@@ -84,6 +86,7 @@ def test_memory_logging(setup_logger):
     assert "MB)" in content
 
 
+@pytest.mark.component
 def test_benchmark_context(setup_logger):
     """Verify benchmark context manager captures duration."""
     with logger.benchmark("speed test"):
@@ -96,6 +99,7 @@ def test_benchmark_context(setup_logger):
     assert "Global:" in content
 
 
+@pytest.mark.component
 def test_system_metrics_patching(setup_logger):
     """Verify system metrics can be enabled and patched into logs."""
     logger.enable_system_metrics()
@@ -106,6 +110,7 @@ def test_system_metrics_patching(setup_logger):
     assert "Thr:" in content
 
 
+@pytest.mark.component
 def test_standard_logging_interception(setup_logger):
     """Verify standard logging is correctly intercepted."""
     logger.intercept_standard_logging()
@@ -117,6 +122,7 @@ def test_standard_logging_interception(setup_logger):
     assert "Intercepted Error" in content
 
 
+@pytest.mark.component
 def test_log_silencing(setup_logger):
     """Verify specific modules can be silenced."""
     logger.intercept_standard_logging()
@@ -141,6 +147,7 @@ def worker_sq(x):
     return x * x
 
 
+@pytest.mark.component
 def test_parallel_thread_recovery(setup_logger):
     """Verify thread execution with task recovery (failed input tracking)."""
 
@@ -162,20 +169,20 @@ def test_parallel_thread_recovery(setup_logger):
     assert "ValueError: Fail Task" in fail_content
 
 
+@pytest.mark.component
 def test_parallel_process_basic(setup_logger):
     """Verify basic process execution works."""
 
     def prep(pool):
         return [pool.apply_async(worker_sq, (i,)) for i in range(2)]
 
-    s, f, failed, results = parallel.process_run(
-        prep, lambda x: x, "Process Basic", 2, workers=2
-    )
+    s, f, failed, results = parallel.process_run(prep, lambda x: x, "Process Basic", 2, workers=2)
     assert s == 2
     assert f == 0
     assert sorted(results) == [0, 1]
 
 
+@pytest.mark.component
 def test_parallel_diverse_returns(setup_logger):
     """Verify that multiple return types (None, dict, tuple) are correctly handled and collected."""
 
@@ -197,6 +204,7 @@ def test_parallel_diverse_returns(setup_logger):
     assert (2, [1, 2]) in results
 
 
+@pytest.mark.component
 def test_summary_panel(setup_logger, capsys):
     """Verify summary panel prints to rich console."""
     logger.info("test summary")
@@ -205,6 +213,7 @@ def test_summary_panel(setup_logger, capsys):
     capsys.readouterr()
 
 
+@pytest.mark.unit
 def test_fork_bomb_safety():
     """Verify the safety check gracefully intercepts non-main-process execution without crashing."""
     # We simulate a child process call

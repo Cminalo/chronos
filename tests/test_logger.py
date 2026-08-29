@@ -1,4 +1,5 @@
 import pytest
+
 from chronos import logger as chronos_logger
 
 
@@ -30,10 +31,12 @@ def configured_logger(tmp_path):
     chronos_logger.remove()
 
 
+@pytest.mark.unit
 def test_logger_exists():
     assert chronos_logger is not None
 
 
+@pytest.mark.component
 def test_benchmark_context_manager(configured_logger):
     with chronos_logger.benchmark("Test Task"):
         pass
@@ -49,9 +52,11 @@ def test_benchmark_context_manager(configured_logger):
     # The benchmark CM does: logger.bind(duration=...).log("BENCHMARK", f"{name} finished")
     # Our custom formatter handles the display.
     # So with simple format "{message}", we won't see "Duration: ...".
-    # We should probably use the real formatter if possible, or accept that we just check the message.
+    # We should probably use the real formatter if possible, or accept
+    # that we just check the message.
 
 
+@pytest.mark.component
 def test_custom_levels(configured_logger):
     chronos_logger.trace("Trace message")
     chronos_logger.debug("Debug message")
@@ -73,6 +78,7 @@ def test_custom_levels(configured_logger):
     assert "Critical message" in content
 
 
+@pytest.mark.component
 def test_exception_catching(configured_logger):
     @chronos_logger.catch
     def failing_function():
@@ -86,6 +92,7 @@ def test_exception_catching(configured_logger):
     assert "Intentional Failure" in content
 
 
+@pytest.mark.component
 def test_interceptor(configured_logger):
     import logging
 
@@ -98,6 +105,7 @@ def test_interceptor(configured_logger):
     assert "This is a standard warning" in content
 
 
+@pytest.mark.component
 def test_system_metrics(configured_logger):
     # Enable metrics
     chronos_logger.enable_system_metrics()
@@ -111,6 +119,7 @@ def test_system_metrics(configured_logger):
     assert "Test metrics log" in content
 
 
+@pytest.mark.component
 def test_parallel_thread(configured_logger):
     from chronos import parallel
 

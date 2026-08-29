@@ -4,6 +4,10 @@
 
 # Local environment variables
 .env
+*.egg-info/
+.venv/
+build/
+
 
 # Logs
 logs/
@@ -17,3 +21,11 @@ __pycache__/
 
 # Build artifacts
 dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Docs
+docs/chronos/_build/

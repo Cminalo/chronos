@@ -13,57 +13,55 @@ It supports:
 
 from __future__ import annotations
 
-import sys
-import os
-import time
-import threading
-import multiprocessing
-import psutil
 import logging
-from contextlib import contextmanager
-from types import TracebackType
+import multiprocessing
+import os
+import sys
+import threading
+import time
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Generator, TYPE_CHECKING, cast, Any, Callable
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, cast
 
+import psutil
 from dotenv import load_dotenv
 from loguru import logger as _logger
 
 # Rich Integration
 try:
+    from rich.columns import Columns
+    from rich.console import Console
     from rich.logging import RichHandler  # noqa: F401 - availability probe
+    from rich.panel import Panel
     from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
         Progress,
         SpinnerColumn,
-        TextColumn,
-        BarColumn,
+        TaskID,
         TaskProgressColumn,
-        MofNCompleteColumn,
+        TextColumn,
         TimeElapsedColumn,
         TimeRemainingColumn,
-        TaskID,
     )
-    from rich.console import Console
-    from rich.panel import Panel
     from rich.table import Table
-    from rich.columns import Columns
 
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
 
 if TYPE_CHECKING:
-    from loguru import Logger, Message, Record
     from contextlib import AbstractContextManager
+
+    from loguru import Logger, Message, Record
 
     # Define a protocol/class for the custom logger to support autocomplete
     class ChronosLogger(Logger):
-        def benchmark(
-            self, name: str = "Operation"
-        ) -> AbstractContextManager[None]: ...
+        def benchmark(self, name: str = "Operation") -> AbstractContextManager[None]: ...
         def memory(self, message: str = "Memory check") -> None: ...
-        def progress(
-            self, transient: bool = False
-        ) -> AbstractContextManager["Progress"]: ...
+        def progress(self, transient: bool = False) -> AbstractContextManager[Progress]: ...
         def intercept_standard_logging(self) -> None: ...
         def enable_system_metrics(self) -> None: ...
         def get_progress_queue(self) -> multiprocessing.Queue[Any]: ...
@@ -82,7 +80,7 @@ if TYPE_CHECKING:
 load_dotenv()
 
 # 2. Define Constants
-LOG_DIR = Path("logs")
+LOG_DIR = Path(os.getenv("CHRONOS_LOG_DIR", "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.log"
 JSON_LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.jsonl"
@@ -118,13 +116,11 @@ if not getattr(_logger, "_chronos_levels_configured", False):
         except ValueError:
             pass  # Level doesn't exist yet
 
-        try:
+        with suppress(TypeError, ValueError):
             _logger.level(name, **config)
-        except (TypeError, ValueError):
-            pass
 
     # Mark as configured so re-imports don't trigger redeclarations
-    setattr(_logger, "_chronos_levels_configured", True)
+    setattr(_logger, "_chronos_levels_configured", True)  # noqa: B010
 
 # Global Stats Tracking
 _LOG_COUNTS = {level["name"]: 0 for level in LOG_LEVELS}
@@ -150,9 +146,8 @@ def _master_patcher(record: Record) -> None:
 # Configure the global master patcher
 _logger.configure(patcher=_master_patcher)
 
-# Global Start Time
-if "CHRONOS_START_TIME" not in os.environ:
-    os.environ["CHRONOS_START_TIME"] = str(time.perf_counter())
+# Global Start Time (per-process; perf_counter is only comparable within one process)
+_CHRONOS_START_TIME: float = time.perf_counter()
 
 
 # 4. Custom Formatters
@@ -160,11 +155,9 @@ def file_formatter(record: Record) -> str:
     """Format used for text files (standard loguru syntax)"""
     message_format = "{message}"
     if "duration" in record["extra"]:
-        global_time = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
+        global_time = time.perf_counter() - _CHRONOS_START_TIME
         message_format = (
-            "{message} (Duration: {extra[duration]:.4f}s, Global: "
-            + f"{global_time:.4f}s"
-            + ")"
+            "{message} (Duration: {extra[duration]:.4f}s, Global: " + f"{global_time:.4f}s" + ")"
         )
     if "memory_mb" in record["extra"]:
         message_format = "{message} (RSS: {extra[memory_mb]:.2f} MB)"
@@ -209,7 +202,9 @@ if RICH_AVAILABLE and use_rich:
         level=console_level,
         format=file_formatter,
         colorize=True,
-        enqueue=False,  # Must be False to prevent background thread terminal tearing with Progress bars
+        # Must be False to prevent background thread terminal
+        # tearing with Progress bars
+        enqueue=False,
         backtrace=True,
         diagnose=True,
     )
@@ -275,9 +270,7 @@ def benchmark(name: str = "Operation") -> Generator[None, None, None]:
     finally:
         end_time = time.perf_counter()
         duration = end_time - start_time
-        _logger.bind(duration=duration).opt(depth=2).log(
-            "BENCHMARK", f"{name} finished"
-        )
+        _logger.bind(duration=duration).opt(depth=2).log("BENCHMARK", f"{name} finished")
 
 
 # 7. Memory Profiling Helper
@@ -317,9 +310,7 @@ class RemoteProgress:
 _PROGRESS_QUEUE: multiprocessing.Queue[Any] | None = None
 _LISTENER_THREAD: threading.Thread | None = None
 _LISTENER_LOCK = threading.Lock()
-_ACTIVE_PROGRESS: Progress | None = (
-    None  # Tracks the currently active Rich progress instance
-)
+_ACTIVE_PROGRESS: Progress | None = None  # Tracks the currently active Rich progress instance
 
 
 def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
@@ -338,15 +329,12 @@ def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
         if msg is None:  # Sentinel for shutdown
             break
 
-        # Always route to the currently active progress instance
-        p = _ACTIVE_PROGRESS
-        if p is None and msg[0] == "progress":
-            continue
-        assert p is not None
-
         category = msg[0]
+        p = _ACTIVE_PROGRESS
 
         if category == "progress":
+            if p is None:
+                continue
             action = msg[1]
             if action == "add":
                 _, _, tid, desc, total, kwargs = msg
@@ -359,6 +347,8 @@ def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
         elif category == "log":
             # Instead of printing directly, we log it raw.
             # This ensures it goes through the main thread's logging synchronization.
+            # NOTE: This must work even when no progress bar is active, otherwise
+            # this listener thread would die and all later child logs would be lost.
             _, formatted_msg = msg
             _logger.opt(raw=True).info(formatted_msg)
 
@@ -373,9 +363,7 @@ def progress(transient: bool = False) -> Generator[Progress, None, None]:
     global _PROGRESS_QUEUE, _LISTENER_THREAD, _ACTIVE_PROGRESS
 
     if not RICH_AVAILABLE:
-        raise ImportError(
-            "The 'rich' library is required. Install with: pip install rich"
-        )
+        raise ImportError("The 'rich' library is required. Install with: pip install rich")
 
     # If we are in a child process and have a queue, yield a proxy
     if multiprocessing.current_process().name != "MainProcess" and _PROGRESS_QUEUE:
@@ -443,10 +431,8 @@ def set_progress_queue(queue: multiprocessing.Queue[Any]) -> None:
     )
 
     def proxy_sink(message: Message) -> None:
-        try:
+        with suppress(ValueError, EOFError, BrokenPipeError):
             queue.put(("log", message))
-        except (ValueError, EOFError, BrokenPipeError):
-            pass
 
     _logger.add(
         proxy_sink,
@@ -524,9 +510,7 @@ class InterceptHandler(logging.Handler):
                 frame = frame.f_back
             depth += 1
 
-        _logger.opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
-        )
+        _logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 def intercept_standard_logging() -> None:
@@ -571,15 +555,13 @@ def summary(
     """
     if not RICH_AVAILABLE:
         print(f"--- {title} ---")
-        print(
-            f"Total Runtime: {time.perf_counter() - float(os.environ['CHRONOS_START_TIME']):.2f}s"
-        )
+        print(f"Total Runtime: {time.perf_counter() - _CHRONOS_START_TIME:.2f}s")
         return
 
     assert _rich_console is not None
 
     # 1. Time Stats
-    runtime = time.perf_counter() - float(os.environ["CHRONOS_START_TIME"])
+    runtime = time.perf_counter() - _CHRONOS_START_TIME
 
     # 2. Log Stats Table
     log_table = Table(box=None, padding=(0, 2))
@@ -592,11 +574,7 @@ def summary(
         if count > 0:
             has_stats = True
             color = next(
-                (
-                    entry["color"].strip("<>")
-                    for entry in LOG_LEVELS
-                    if entry["name"] == level
-                ),
+                (entry["color"].strip("<>") for entry in LOG_LEVELS if entry["name"] == level),
                 "white",
             )
             # Special handling for EXCEPTION which isn't in LOG_LEVELS
@@ -652,16 +630,16 @@ def get_progress_queue() -> multiprocessing.Queue[Any]:
 sys.excepthook = handle_exception
 
 # Attach methods
-setattr(_logger, "benchmark", benchmark)
-setattr(_logger, "memory", memory)
-setattr(_logger, "progress", progress)
-setattr(_logger, "intercept_standard_logging", intercept_standard_logging)
-setattr(_logger, "enable_system_metrics", enable_system_metrics)
-setattr(_logger, "get_progress_queue", get_progress_queue)
-setattr(_logger, "set_progress_queue", set_progress_queue)
-setattr(_logger, "reset_progress_queue", reset_progress_queue)
-setattr(_logger, "summary", summary)
-setattr(_logger, "silence", silence)
+setattr(_logger, "benchmark", benchmark)  # noqa: B010
+setattr(_logger, "memory", memory)  # noqa: B010
+setattr(_logger, "progress", progress)  # noqa: B010
+setattr(_logger, "intercept_standard_logging", intercept_standard_logging)  # noqa: B010
+setattr(_logger, "enable_system_metrics", enable_system_metrics)  # noqa: B010
+setattr(_logger, "get_progress_queue", get_progress_queue)  # noqa: B010
+setattr(_logger, "set_progress_queue", set_progress_queue)  # noqa: B010
+setattr(_logger, "reset_progress_queue", reset_progress_queue)  # noqa: B010
+setattr(_logger, "summary", summary)  # noqa: B010
+setattr(_logger, "silence", silence)  # noqa: B010
 
 logger = cast("ChronosLogger", _logger)
 __all__ = ["logger"]
