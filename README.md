@@ -177,7 +177,11 @@ CHRONOS_LOG_DIR=logs
 # Interpolate live variable values into traceback logs — development only,
 # values may include secrets (Default: False)
 CHRONOS_DIAGNOSE=False
-```
+ ```
+
+Invalid configuration degrades gracefully: an unwritable `CHRONOS_LOG_DIR` falls back to
+`<system tempdir>/chronos-logs` and an invalid `LOGGER_LEVEL` falls back to `INFO` — both
+warned once at startup, and the application keeps running.
 
 ---
 

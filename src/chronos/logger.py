@@ -16,7 +16,9 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import re
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Generator
@@ -79,9 +81,24 @@ if TYPE_CHECKING:
 # 1. Load Environment Variables
 load_dotenv()
 
+
 # 2. Define Constants
-LOG_DIR = Path(os.getenv("CHRONOS_LOG_DIR", "logs"))
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+def _resolve_log_dir(raw: str | None) -> tuple[Path, str | None]:
+    """Resolve the log directory, falling back to the system temp dir if unusable."""
+    base = Path(raw or "logs")
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        if not os.access(base, os.W_OK):
+            raise PermissionError(f"not writable: {base}")
+        return base, None
+    except OSError as err:
+        fallback = Path(tempfile.gettempdir()) / "chronos-logs"
+        with suppress(OSError):
+            fallback.mkdir(parents=True, exist_ok=True)
+        return fallback, f"CHRONOS_LOG_DIR '{raw}' unusable ({err}); log files -> '{fallback}'"
+
+
+LOG_DIR, _LOG_DIR_WARNING = _resolve_log_dir(os.getenv("CHRONOS_LOG_DIR"))
 LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.log"
 JSON_LOG_FILE_PATH = LOG_DIR / "chronos_{time:YYYY-MM-DD}.jsonl"
 FAILURES_LOG_FILE_PATH = LOG_DIR / "failures_{time:YYYY-MM-DD}.log"
@@ -195,11 +212,20 @@ def file_formatter(record: Record) -> str:
     )
 
 
+def _resolve_console_level(raw: str) -> tuple[str, str | None]:
+    """Resolve LOGGER_LEVEL against registered levels, falling back to INFO."""
+    level = raw.strip().upper()
+    if level in _LOG_COUNTS:
+        return level, None
+    return "INFO", f"Invalid LOGGER_LEVEL '{raw}'; falling back to INFO"
+
+
 # 5. Configure Sinks
 _logger.remove()
 
-console_level = os.getenv("LOGGER_LEVEL", "INFO").upper()
+console_level, _LEVEL_WARNING = _resolve_console_level(os.getenv("LOGGER_LEVEL", "INFO"))
 use_rich = os.getenv("RICH_CONSOLE", "True").lower() in ("true", "1", "yes")
+
 # diagnose=True interpolates live variable values into tracebacks (secret-leak
 # risk in persistent logs); opt in for local development via CHRONOS_DIAGNOSE.
 diagnose = os.getenv("CHRONOS_DIAGNOSE", "False").lower() in ("true", "1", "yes")
@@ -229,6 +255,17 @@ def _add_file_sink(path: Path, **kwargs: Any) -> None:
     )
 
 
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _console_is_tty() -> bool:
+    """Whether the inherited console is a TTY (drives color decisions)."""
+    try:
+        return bool(sys.stderr.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 # Optional Global Rich Console (used so logger and progress share the same buffer)
 # We must explicitly set file=sys.stderr so it perfectly synchronizes with Loguru's output stream.
 _rich_console = Console(file=sys.stderr) if RICH_AVAILABLE else None
@@ -238,7 +275,10 @@ def rich_console_sink(message: Message) -> None:
     """Custom sink that forces Loguru to use Rich's print, preventing progress bar tearing."""
     if _rich_console is None:
         return
-    _rich_console.print(message, end="", markup=False, highlight=False)
+    # Rich passes embedded ANSI through even to non-TTY streams; strip it when
+    # piped so redirected output stays clean.
+    text = message if _console_is_tty() else _ANSI_SGR_RE.sub("", message)
+    _rich_console.print(text, end="", markup=False, highlight=False)
 
 
 if RICH_AVAILABLE and use_rich:
@@ -261,10 +301,15 @@ else:
         level=console_level,
         format=console_formatter,
         enqueue=True,
-        colorize=True,
+        colorize=None,
         backtrace=False,
         diagnose=False,
     )
+
+# Surface configuration fallbacks now that sinks exist to carry them.
+for _config_warning in (_LOG_DIR_WARNING, _LEVEL_WARNING):
+    if _config_warning:
+        _logger.warning(_config_warning)
 
 # Sink 2: Text Log (logs/chronos_DATE.log)
 _add_file_sink(LOG_FILE_PATH, level="TRACE", format=file_formatter, filter=_not_proxied)
@@ -303,6 +348,12 @@ def memory(message: str = "Memory check") -> None:
 
 
 # 8. Rich Progress & Log Proxy Manager
+_PROGRESS_QUEUE: multiprocessing.Queue[Any] | None = None
+_LISTENER_THREAD: threading.Thread | None = None
+_LISTENER_LOCK = threading.Lock()
+_ACTIVE_PROGRESS: Progress | None = None  # Tracks the currently active Rich progress instance
+
+
 class RemoteProgress:
     """
     A proxy for the rich.progress.Progress object that can be used in child processes.
@@ -317,21 +368,6 @@ class RemoteProgress:
         task_id = id(description) + int(time.time() * 1000)
         self._queue.put(("progress", "add", task_id, description, total, kwargs))
         return task_id
-
-    def update(self, task_id: int, advance: float = 0, **kwargs: Any) -> None:
-        self._queue.put(("progress", "update", task_id, advance, kwargs))
-
-    def __enter__(self) -> RemoteProgress:
-        return self
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        pass
-
-
-_PROGRESS_QUEUE: multiprocessing.Queue[Any] | None = None
-_LISTENER_THREAD: threading.Thread | None = None
-_LISTENER_LOCK = threading.Lock()
-_ACTIVE_PROGRESS: Progress | None = None  # Tracks the currently active Rich progress instance
 
 
 def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
@@ -350,30 +386,36 @@ def _main_listener(queue: multiprocessing.Queue[Any]) -> None:
         if msg is None:  # Sentinel for shutdown
             break
 
-        category = msg[0]
-        p = _ACTIVE_PROGRESS
+        # One malformed message must never kill the listener thread — that
+        # would silently drop every later child log and progress update.
+        try:
+            category = msg[0]
+            p = _ACTIVE_PROGRESS
 
-        if category == "progress":
-            if p is None:
-                continue
-            action = msg[1]
-            if action == "add":
-                _, _, tid, desc, total, kwargs = msg
-                tasks[tid] = p.add_task(desc, total=total, **kwargs)
-            elif action == "update":
-                _, _, tid, advance, kwargs = msg
-                if tid in tasks:
-                    p.update(tasks[tid], advance=advance, **kwargs)
+            if category == "progress":
+                if p is None:
+                    continue
+                action = msg[1]
+                if action == "add":
+                    _, _, tid, desc, total, kwargs = msg
+                    tasks[tid] = p.add_task(desc, total=total, **kwargs)
+                elif action == "update":
+                    _, _, tid, advance, kwargs = msg
+                    if tid in tasks:
+                        p.update(tasks[tid], advance=advance, **kwargs)
 
-        elif category == "log":
-            # Instead of printing directly, we log it raw.
-            # This ensures it goes through the main thread's logging synchronization.
-            # NOTE: This must work even when no progress bar is active, otherwise
-            # this listener thread would die and all later child logs would be lost.
-            # The `proxied` flag routes these to console sinks only — the child
-            # process already wrote them to the shared file sinks.
-            _, formatted_msg = msg
-            _logger.bind(proxied=True).opt(raw=True).info(formatted_msg)
+            elif category == "log":
+                # Instead of printing directly, we log it raw.
+                # This ensures it goes through the main thread's logging synchronization.
+                # NOTE: This must work even when no progress bar is active, otherwise
+                # this listener thread would die and all later child logs would be lost.
+                # The `proxied` flag routes these to console sinks only — the child
+                # process already wrote them to the shared file sinks.
+                _, formatted_msg = msg
+                _logger.bind(proxied=True).opt(raw=True).info(formatted_msg)
+        except Exception:  # noqa: BLE001 - resilience over correctness here
+            _logger.warning("chronos listener dropped a malformed child message")
+            continue
 
 
 @contextmanager
@@ -444,14 +486,16 @@ def set_progress_queue(queue: multiprocessing.Queue[Any]) -> None:
     )
 
     def proxy_sink(message: Message) -> None:
-        with suppress(ValueError, EOFError, BrokenPipeError):
+        with suppress(ValueError, EOFError, BrokenPipeError, OSError):
             queue.put(("log", message))
 
+    # Spawned children inherit the parent's stderr fd, so the TTY check here
+    # matches the parent console: colorize only when output is actually a TTY.
     _logger.add(
         proxy_sink,
-        level=os.getenv("LOGGER_LEVEL", "INFO").upper(),
+        level=console_level,
         format=console_formatter,
-        colorize=True,
+        colorize=_console_is_tty(),
     )
 
 
@@ -571,7 +615,10 @@ def summary(
         print(f"Total Runtime: {time.perf_counter() - _CHRONOS_START_TIME:.2f}s")
         return
 
-    assert _rich_console is not None
+    if _rich_console is None:  # Defensive: RICH_AVAILABLE but console missing
+        print(f"--- {title} ---")
+        print(f"Total Runtime: {time.perf_counter() - _CHRONOS_START_TIME:.2f}s")
+        return
 
     # 1. Time Stats
     runtime = time.perf_counter() - _CHRONOS_START_TIME

@@ -2,6 +2,20 @@
 
 Reverse-chronological log of logical change batches.
 
+## [2026-08-29] — ANSI-correct colorization + logging robustness hardening
+
+### Changed
+- Colorization is now TTY-aware end to end: piped/redirected output (console, Rich path, and child-process proxy lines) carries zero ANSI escapes; TTY output stays fully colored. The child proxy decides colorization from the inherited stderr fd, matching the parent console.
+- `summary()` no longer relies on a stripped-under-`-O` assert; missing Rich console falls back to the plain-text report.
+
+### Fixed
+- `_main_listener` survives malformed child messages (wrong arity, non-tuple garbage): one bad message logs a warning instead of killing the thread and silently dropping every later child log.
+- Import no longer crashes on hostile configuration: unwritable/invalid `CHRONOS_LOG_DIR` falls back to `<tempdir>/chronos-logs`, invalid `LOGGER_LEVEL` falls back to `INFO`, both with a logged warning.
+- Restored the module-level `_logger.remove()` lost during refactoring — its absence silently doubled every console line (loguru default sink + chronos sink). Regression test added.
+
+### Tests
+- New `tests/test_logger_robustness.py` (17 tests, unit/component/system): config-resolution fallbacks, listener resilience to garbage queue messages, proxied-log console-only routing contract, 7-day retention sink contract, custom stdlib-level interception, `summary()` fallbacks, import-time sink-set contract (subprocess-isolated), and a full spawn child→proxy→console/file round trip asserting single clean lines.
+
 ## [2026-08-28] — Log output overhaul + retention policy
 
 ### Changed

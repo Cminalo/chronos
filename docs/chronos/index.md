@@ -61,7 +61,7 @@ Environment variables (via `.env`):
 | `RICH_CONSOLE` | `True` | Toggle the Rich Terminal UI |
 | `CHRONOS_DIAGNOSE` | `False` | Interpolate live variable values into traceback logs — development only, values may include secrets |
 
-Log files rotate daily at midnight and are retained for 7 days. Console records render as compact single lines with an IDE-clickable `path:line` suffix; file logs keep full timestamps and process/thread context.
+Log files rotate daily at midnight and are retained for 7 days. Console records render as compact single lines with an IDE-clickable `path:line` suffix; file logs keep full timestamps and process/thread context. Invalid configuration degrades gracefully: unusable `CHRONOS_LOG_DIR` falls back to the system temp dir, invalid `LOGGER_LEVEL` falls back to `INFO` — both with a startup warning.
 
 ## Development
 
