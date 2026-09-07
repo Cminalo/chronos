@@ -2,6 +2,11 @@
 
 Reverse-chronological log of logical change batches.
 
+## [v0.8.1] — 2026-09-07
+
+### Changed
+- Lowered the supported Python floor from 3.11 to 3.10: `requires-python >= 3.10`, mypy `python_version = "3.10"`, ruff `target-version = "py310"`. No source changes were needed — the codebase uses no 3.11+ syntax or stdlib APIs. Metadata-only release; 0.8.0 remains on PyPI but can never be re-uploaded (PyPI versions are immutable), so the fix ships as 0.8.1.
+
 ## [v0.8.0] — 2026-08-29
 
 Release tag for the batches below (2026-08-28 → 2026-08-29): streaming map API in `parallel`, compact clickable console format with 7-day retention, TTY-aware colorization, and the child progress proxy / interceptor / console sink hardening. Version bump 0.7.9 → 0.8.0 (new public API: `parallel` streaming map).

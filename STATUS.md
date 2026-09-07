@@ -10,6 +10,7 @@
 
 ## Recent commits
 - 2026-08-29: code audit fixes (RemoteProgress update/advance + collision-free IDs, interceptor never crashes caller, piped console no-wrap, summary markup, counts lock; 5 regression tests)
+- 2026-09-07: v0.8.1 metadata-only release — Python floor lowered 3.11 → 3.10 (requires-python, mypy, ruff targets; no source changes needed)
 - 2026-08-28: log output overhaul (compact clickable console format, 7-day retention, proxied-log dedup + ANSI fix, CHRONOS_DIAGNOSE gate)
 - 2026-08-16: refactor(logger): add type annotations and clean up formatting
 - 2026-07-11: chore: align project with init-py-project conventions

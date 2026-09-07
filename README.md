@@ -1,6 +1,6 @@
 # Chronos
 
-A high-performance, developer-friendly logging and parallel execution suite for Python 3.13, built on top of [Loguru](https://github.com/Delgan/loguru) and [Rich](https://github.com/Textualize/rich).
+A high-performance, developer-friendly logging and parallel execution suite for Python 3.10+, built on top of [Loguru](https://github.com/Delgan/loguru) and [Rich](https://github.com/Textualize/rich).
 
 Chronos is designed to provide professional-grade observability and concurrency tools with zero boilerplate. It ensures that your terminal remains clean, your logs remain detailed, and your parallel tasks remain traceable.
 
