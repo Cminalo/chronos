@@ -49,7 +49,16 @@ if __name__ == "__main__":
     main()
 ```
 
-See [README.md](../../README.md) for full examples and API reference.
+See the [README](https://github.com/Cminalo/chronos#readme) for full examples.
+
+```{toctree}
+:maxdepth: 2
+:hidden:
+
+getting-started
+api
+architecture
+```
 
 ## Configuration
 
@@ -85,4 +94,4 @@ pixi run build
 
 ## Contributing
 
-This project uses pixi for dependency management, ruff for linting/formatting, mypy for type checking, and pytest for testing. Ensure all four gates pass before committing.
+This project uses pixi for dependency management, ruff for linting/formatting, pyrefly for type checking, and pytest for testing. Ensure all four gates pass before committing.

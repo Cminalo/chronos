@@ -23,9 +23,13 @@ __pycache__/
 dist/
 .pytest_cache/
 .mypy_cache/
+.pyrefly/
 .ruff_cache/
 .coverage
 htmlcov/
 
 # Docs
 docs/chronos/_build/
+
+# Comment/docstring shadow (local only)
+.comments/

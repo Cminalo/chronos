@@ -5,17 +5,33 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "psutil>=7.2.0",
     "rich>=14.3.0",
+    "typing-extensions>=4.12,<5",
 ]
 name = "chronos-logger"
-requires-python = ">= 3.10"
+readme = "README.md"
+requires-python = ">= 3.11"
 version = "0.8.1"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/Cminalo/chronos"
+Repository = "https://github.com/Cminalo/chronos"
+Issues = "https://github.com/Cminalo/chronos/issues"
 
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "build>=1.5.0,<2",
     "pytest>=8,<9",
-    "mypy>=1.15,<2",
+    "pyrefly>=1.0,<2",
     "ruff>=0.9,<1",
     "sphinx>=8,<10",
     "myst-parser>=5,<6",
@@ -39,14 +55,14 @@ markers = [
     "unit: Pure function tests, no I/O.",
     "component: Multiple functions working together, no network.",
     "system: End-to-end workflow reflecting a real user use case.",
-    "live: Tests that make real HTTP requests (skipped by default).",
+    "live: Tests that make real HTTP requests (opt-in; run via test-live).",
 ]
 
-[tool.mypy]
-python_version = "3.10"
-strict = true
-ignore_missing_imports = true
-exclude = ["tests/"]
+[tool.pyrefly]
+project-includes = ["src/chronos"]
+project-excludes = ["**/.[!/.]*/**"]
+python-version = "3.11"
+preset = "strict"
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -57,29 +73,32 @@ platforms = ["osx-arm64"]
 chronos-logger = { path = ".", editable = true }
 build = ">=1.5.0,<2"
 pytest = ">=8,<9"
-mypy = ">=1.15,<2"
+pyrefly = ">=1.0,<2"
 ruff = ">=0.9,<1"
 sphinx = ">=8,<10"
 myst-parser = ">=5,<6"
 sphinx-immaterial = ">=0.13,<1"
 
 [tool.pixi.tasks]
-test = "pixi run python -m pytest"
-test-quick = "pixi run python -m pytest -m 'unit or component'"
-test-unit = "pixi run python -m pytest -m unit"
-test-component = "pixi run python -m pytest -m component"
-test-system = "pixi run python -m pytest -m system"
+test = "pixi run python -m pytest -m 'not live'"
+test-live = "pixi run python -m pytest -m live"
+test-quick = "pixi run python -m pytest -m '(unit or component) and not live'"
+test-unit = "pixi run python -m pytest -m 'unit and not live'"
+test-component = "pixi run python -m pytest -m 'component and not live'"
+test-system = "pixi run python -m pytest -m 'system and not live'"
 docs = "pixi run sphinx-build -b html docs/chronos docs/chronos/_build/html"
 lint = "pixi run ruff check"
 lint-check = "pixi run ruff check --diff"
 fmt = "pixi run ruff format"
 fmt-check = "pixi run ruff format --diff"
-typecheck = "mypy src/chronos"
+typecheck = "pyrefly check"
 build = "pixi run python -m build"
+comments-add = "pixi run python scripts/comments.py add"
+comments-strip = "pixi run python scripts/comments.py strip"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

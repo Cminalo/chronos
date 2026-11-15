@@ -1,6 +1,6 @@
 # Chronos
 
-A high-performance, developer-friendly logging and parallel execution suite for Python 3.10+, built on top of [Loguru](https://github.com/Delgan/loguru) and [Rich](https://github.com/Textualize/rich).
+A high-performance, developer-friendly logging and parallel execution suite for Python 3.11+, built on top of [Loguru](https://github.com/Delgan/loguru) and [Rich](https://github.com/Textualize/rich).
 
 Chronos is designed to provide professional-grade observability and concurrency tools with zero boilerplate. It ensures that your terminal remains clean, your logs remain detailed, and your parallel tasks remain traceable.
 
@@ -194,7 +194,7 @@ pixi run test        # Full test suite (tier-marked: unit/component/system)
 pixi run test-quick  # Unit + component tests only
 pixi run lint        # ruff check
 pixi run fmt         # ruff format
-pixi run typecheck   # mypy strict mode
+pixi run typecheck   # pyrefly check (strict preset)
 pixi run docs        # Build Sphinx docs
 pixi run build       # Build wheel (python -m build under pixi)
 ```

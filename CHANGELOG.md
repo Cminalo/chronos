@@ -2,6 +2,21 @@
 
 Reverse-chronological log of logical change batches.
 
+## [2026-11-15] — Toolchain: pyrefly, PEP 735 dev group, docs pages, comment shadow
+
+### Changed
+- Type checking migrated from mypy to pyrefly (`preset = "strict"`, `project-includes = ["src/chronos"]`); `pixi run typecheck` now runs `pyrefly check`. `typing-extensions` added as a runtime dependency for `typing.override` on 3.11.
+- Python floor raised back to 3.11: `requires-python >= 3.11`, ruff `target-version = "py311"`, pyrefly `python-version = "3.11"`, matching the CI matrix (3.11–3.13).
+- Dev dependencies moved from `[project.optional-dependencies]` to a PEP 735 `[dependency-groups]` table; CI installs them with `pip install --group dev .`.
+- Package metadata: `readme`, `classifiers` (3.11–3.13, `Typing :: Typed`), and `[project.urls]`.
+- Test tasks now exclude `live` explicitly and add `test-live` for the opt-in network tier; `lint-check` / `fmt-check` added.
+- `logger.py`: `_rich_console` construction moved into the Rich import guard; failure-sink filters extracted to `_is_failure` / `_is_failure_and_not_proxied`; `InterceptHandler.emit` marked `@override`.
+
+### Added
+- `docs/chronos/getting-started.md`, `docs/chronos/api.md` (autodoc), `docs/chronos/architecture.md`, wired into the `index.md` toctree.
+- `scripts/comments.py` + `comments-add` / `comments-strip` pixi tasks: comment/docstring shadow workflow (annotated tree mirrored to gitignored `.comments/`, stripped working tree for agent work).
+- `AGENTS.md`: engineering practices, comment shadow workflow, subagent policy.
+
 ## [v0.8.1] — 2026-09-07
 
 ### Changed

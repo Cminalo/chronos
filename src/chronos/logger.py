@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, cast
 import psutil
 from dotenv import load_dotenv
 from loguru import logger as _logger
+from typing_extensions import override
 
 # Rich Integration
 try:
@@ -53,8 +54,12 @@ try:
     from rich.table import Table
 
     RICH_AVAILABLE = True
+    # Optional global Rich console: logger and progress share one buffer.
+    # file=sys.stderr keeps it synchronized with Loguru's output stream.
+    _rich_console = Console(file=sys.stderr)
 except ImportError:
     RICH_AVAILABLE = False
+    _rich_console = None
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -246,6 +251,14 @@ def _not_proxied(record: Record) -> bool:
     return not record["extra"].get("proxied", False)
 
 
+def _is_failure(record: Record) -> bool:
+    return bool(record["extra"].get("is_failure", False))
+
+
+def _is_failure_and_not_proxied(record: Record) -> bool:
+    return _is_failure(record) and _not_proxied(record)
+
+
 def _add_file_sink(path: Path, **kwargs: Any) -> None:
     """Add a daily-rotated, 7-day-retained, compressed file sink."""
     _logger.add(
@@ -269,11 +282,6 @@ def _console_is_tty() -> bool:
         return bool(sys.stderr.isatty())
     except (AttributeError, ValueError, OSError):
         return False
-
-
-# Optional Global Rich Console (used so logger and progress share the same buffer)
-# We must explicitly set file=sys.stderr so it perfectly synchronizes with Loguru's output stream.
-_rich_console = Console(file=sys.stderr) if RICH_AVAILABLE else None
 
 
 def rich_console_sink(message: Message) -> None:
@@ -327,7 +335,7 @@ _add_file_sink(JSON_LOG_FILE_PATH, level="TRACE", serialize=True, filter=_not_pr
 _add_file_sink(
     FAILURES_LOG_FILE_PATH,
     level="ERROR",
-    filter=lambda record: record["extra"].get("is_failure", False) and _not_proxied(record),
+    filter=_is_failure_and_not_proxied,
     format=file_formatter,
 )
 
@@ -499,7 +507,7 @@ def set_progress_queue(queue: multiprocessing.Queue[Any]) -> None:
     _add_file_sink(
         FAILURES_LOG_FILE_PATH,
         level="ERROR",
-        filter=lambda record: record["extra"].get("is_failure", False),
+        filter=_is_failure,
         format=file_formatter,
     )
 
@@ -566,6 +574,7 @@ class InterceptHandler(logging.Handler):
     Intercepts standard logging messages and routes them to Loguru.
     """
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         try:
             # Respect silenced modules
